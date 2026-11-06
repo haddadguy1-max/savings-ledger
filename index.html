@@ -1010,7 +1010,7 @@ function drawBridge(t){
 
 /* ==================== insights ==================== */
 function updateInsights(t){
-  const deltas = t.keys.map(k=>t.comp[k].delta);
+  const deltas = t.keys.map(k=>deltaOf(t,k));   /* January 2026 at its real saving, not the savings brought in */
   const set = (id,v)=>document.getElementById(id).innerText = v;
   if(!deltas.length){
     ['i-avg','i-median','i-best','i-worst','i-streak','i-ticket','i-guyshare','i-goldalloc'].forEach(id=>set(id,'—'));
@@ -1033,8 +1033,9 @@ function updateInsights(t){
   set('i-streak', `${posMonths} / ${deltas.length}`);
   set('i-ticket', t.depositCount ? money0(t.depositSum/t.depositCount) : '—');
   set('i-ticket-sub', `${t.depositCount} deposits`);
-  const gross = t.guy + t.lea;
-  set('i-guyshare', gross > 0 ? (t.guy/gross*100).toFixed(0) + '%' : '—');
+  let gG=0, lL=0; t.keys.forEach(k=>{ gG += t.comp[k].guyTotal; lL += t.comp[k].leaTotal; });   /* deposits only, loans left out */
+  const gross = gG + lL;
+  set('i-guyshare', gross > 0 ? (gG/gross*100).toFixed(0) + '%' : '—');
   const assets = t.cash + t.gold;
   set('i-goldalloc', assets > 0 ? (t.gold/assets*100).toFixed(0) + '%' : '—');
 }
