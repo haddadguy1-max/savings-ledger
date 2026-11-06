@@ -88,7 +88,8 @@ document.body.insertAdjacentHTML('beforeend',`
    <input id="x-amt" class="x-input" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
   <div id="x-goldbox" hidden><div class="x-row">
    <div><label class="x-label" for="x-g">Grams</label><input id="x-g" class="x-input" inputmode="decimal" autocomplete="off" placeholder="0"></div>
-   <div><label class="x-label" for="x-p">USD per gram</label><input id="x-p" class="x-input" inputmode="decimal" autocomplete="off" placeholder="0.00"></div></div></div>
+   <div><label class="x-label" for="x-p">USD per gram</label><input id="x-p" class="x-input" inputmode="decimal" autocomplete="off" placeholder="0.00"></div></div>
+   <label class="x-label" for="x-k">Purity</label><select id="x-k" class="x-input"><option value="">Default (set in Gold valuation)</option><option value="24">24k</option><option value="22">22k</option><option value="21">21k</option><option value="18">18k</option></select></div>
   <label class="x-label" for="x-date">Date</label><input type="date" id="x-date" class="x-input">
   <p class="x-prev" id="x-prev"></p><p class="x-err" id="x-err" role="alert"></p>
   <div class="x-actions"><button type="submit" class="x-primary" id="x-save">Save entry</button>
@@ -144,29 +145,62 @@ renderAll=function(){
   }
   baseRenderAll();
 };
+/* ---------- ledger: filters, market value, clickable cells ---------- */
+const LF={who:'',cat:'',year:''};
+const kOf=d=>{const m=/(\d{2})\s*k/i.exec(d.type||'');return m?+m[1]:0;};
+const isLoanRow=d=>(d.name||'').includes('loan');
+const isGoldRow=d=>!isLoanRow(d)&&(d.gold||0)>0;
+const goldNow=d=>{const p=px24();return p>0?(d.gold||0)*p*rowKarat(d)/24:(d.gold||0)*(d.goldPrice||0);};
+function lfPass(d){
+  const n=d.name||'',loan=isLoanRow(d),gold=isGoldRow(d);
+  if(LF.who==='guy'&&!n.includes('guy'))return false;
+  if(LF.who==='lea'&&!n.includes('lea'))return false;
+  if(LF.cat==='Loan'&&!loan)return false;
+  if(LF.cat==='Cash'&&(loan||gold))return false;
+  if(LF.cat==='Gold'&&!gold)return false;
+  if(/^Gold \d+k$/.test(LF.cat)&&!(gold&&kOf(d)===+LF.cat.slice(5,-1)))return false;
+  if(LF.year&&!String(d.yyyyMM||'').startsWith(LF.year))return false;
+  return true;
+}
+function lfControls(rows){
+  const years=[...new Set(rows.map(d=>String(d.yyyyMM||'').slice(0,4)).filter(Boolean))].sort().reverse();
+  const ks=[...new Set(rows.filter(isGoldRow).map(kOf).filter(Boolean))].sort((a,b)=>b-a);
+  const set=(id,opts,val)=>{const el=$(id);if(!el)return;el.innerHTML=opts.map(([v,l])=>`<option value="${esc(v)}">${esc(l)}</option>`).join('');el.value=val;};
+  set('x-lf-who',[['','Everyone'],['guy','Guy'],['lea','Lea']],LF.who);
+  set('x-lf-cat',[['','All types'],['Cash','Cash'],['Gold','Gold'],...ks.map(k=>[`Gold ${k}k`,`Gold ${k}k`]),['Loan','Loans']],LF.cat);
+  set('x-lf-year',[['','All years'],...years.map(y=>[y,y])],LF.year);
+}
 renderTable=function(filtered){
   const tbody=document.querySelector('#tx-table tbody');tbody.innerHTML='';
   const q=txQuery.trim().toLowerCase();
-  let rows=[...filtered].sort((a,b)=>b.sortTs-a.sortTs);
+  lfControls(filtered);
+  let rows=[...filtered].sort((a,b)=>b.sortTs-a.sortTs).filter(lfPass);
   if(q)rows=rows.filter(d=>(d.name||'').includes(q)||(d.type||'').toLowerCase().includes(q));
+  let paid=0,now=0,cash=0;
   if(!rows.length){
-    tbody.innerHTML=`<tr><td colspan="7" class="empty-note">${allData.length?'No entries match':'No entries yet. Tap Add entry or upload a CSV.'}</td></tr>`;
-    $('tx-count').innerText='(0)';return;
+    tbody.innerHTML=`<tr><td colspan="8" class="empty-note">${allData.length?'No entries match these filters':'No entries yet. Tap Add entry or upload a CSV.'}</td></tr>`;
+    $('tx-count').innerText='(0)';if($('x-lf-sum'))$('x-lf-sum').textContent='';return;
   }
   rows.forEach(d=>{
-    const gVal=(d.gold||0)*(d.goldPrice||0),isLoan=(d.name||'').includes('loan'),isGold=(d.gold||0)>0;
-    const cat=isLoan?'Loan':(isGold?'Gold':'Cash');
+    const gVal=(d.gold||0)*(d.goldPrice||0),loan=isLoanRow(d),gold=isGoldRow(d);
+    const cat=loan?'Loan':(gold?'Gold':'Cash');
+    const gn=gold?goldNow(d):0;
+    if(!loan){cash+=d.usd||0;if(gold){paid+=gVal;now+=gn;}}else cash+=d.usd||0;
+    const gain=gold&&gVal>0?gn/gVal-1:null;
     const tr=document.createElement('tr');
     tr.innerHTML=`<td style="white-space:nowrap">${esc((d.date||'').split(' ')[0])}</td>
-      <td style="font-weight:500;text-transform:capitalize">${esc(d.name)}</td>
-      <td class="num ${d.usd<0?'neg':''}">${d.usd<0?'−':''}$${Math.abs(d.usd).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-      <td class="num">${d.gold?d.gold.toFixed(2)+' g':'—'}</td>
-      <td class="num">${gVal?money2(gVal):'—'}</td>
-      <td><span class="badge ${cat.toLowerCase()}">${cat}</span></td>
+      <td class="x-click" data-lf="who" data-val="${esc((d.name||'').includes('guy')?'guy':(d.name||'').includes('lea')?'lea':'')}" style="font-weight:500;text-transform:capitalize">${esc(d.name)}</td>
+      <td class="num ${d.usd<0?'neg':''}" data-v="${d.usd||0}">${d.usd<0?'−':''}$${Math.abs(d.usd).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td class="num" data-v="${d.gold||0}">${d.gold?d.gold.toFixed(2)+' g'+(kOf(d)?' · '+kOf(d)+'k':''):'—'}</td>
+      <td class="num" data-v="${gVal||0}">${gVal?money2(gVal):'—'}</td>
+      <td class="num" data-v="${gold?gn:0}">${gold?money2(gn)+(gain==null?'':`<div class="x-sub ${gain>=0?'pos':'neg'}">${(gain>=0?'+':'−')+Math.abs(gain*100).toFixed(1)}%</div>`):'—'}</td>
+      <td class="x-click" data-lf="cat" data-val="${cat}"><span class="badge ${cat.toLowerCase()}">${cat}</span></td>
       <td class="num"><button class="x-link" data-act="edit" data-id="${esc(d.id)}">Edit</button><button class="x-link x-del" data-act="del" data-id="${esc(d.id)}">Delete</button></td>`;
     tbody.appendChild(tr);
   });
   $('tx-count').innerText=`(${rows.length})`;
+  if($('x-lf-sum'))$('x-lf-sum').textContent=`${rows.length} entr${rows.length>1?'ies':'y'} · ${money0(cash)} in dollars`+(paid?` · gold paid ${money0(paid)}, worth ${money0(now)} now`:'');
+  if(window.lgApplySort)window.lgApplySort('tx-table');
 };
 loadFile=function(file){
   $('file-info').textContent=`Loading ${file.name}…`;
@@ -201,11 +235,11 @@ function openSheet(row){
     const n=row.name||'',loan=n.includes('loan');
     setKind(loan?(row.usd<0?'loan_taken':'loan_repaid'):row.gold>0?'gold':(row.usd<0?'withdraw':'deposit'));
     setWho(n.includes('lea')?'lea':'guy');
-    $('x-amt').value=row.gold>0?'':Math.abs(row.usd||0)||'';$('x-g').value=row.gold>0?row.gold:'';$('x-p').value=row.goldPrice||'';
+    $('x-amt').value=row.gold>0?'':Math.abs(row.usd||0)||'';$('x-g').value=row.gold>0?row.gold:'';$('x-p').value=row.goldPrice||'';$('x-k').value=(/(\d{2})\s*k/i.exec(row.type||'')||['',''])[1];
     $('x-date').value=toYMD(row.sortTs)||toYMD(Date.now());
   }else{
     setKind(pr.kind||'deposit');setWho(pr.who||'guy');
-    $('x-amt').value='';$('x-g').value='';$('x-p').value=pr.price||'';$('x-date').value=toYMD(Date.now());
+    $('x-amt').value='';$('x-g').value='';$('x-p').value=pr.price||'';$('x-k').value=pr.karat||'';$('x-date').value=toYMD(Date.now());
   }
   preview();$('x-scrim').hidden=false;$('x-sheet').hidden=false;document.body.style.overflow='hidden';
   setTimeout(()=>$(S.kind==='gold'?'x-g':'x-amt').focus(),60);
@@ -220,7 +254,7 @@ function submit(again){
   if(k==='gold'){
     const g=num($('x-g').value),p=num($('x-p').value);
     if(!(g>0)||!(p>0)){err.textContent='Enter grams and a price per gram above zero.';return;}
-    row.type='Gold';row.gold=g;row.goldPrice=p;writePrefs({price:p});
+    const kt=$('x-k').value;row.type=kt?`Gold ${kt}k`:'Gold';row.gold=g;row.goldPrice=p;writePrefs({price:p,karat:kt});
   }else{
     const a=num($('x-amt').value);
     if(!(a>0)){err.textContent='Enter an amount above zero.';return;}
@@ -282,7 +316,7 @@ const fmtN=v=>(v||v===0)&&v!==0?String(v):'';
 function renderRaw(){
   $('x-raw-n').textContent=`(${allData.length} rows)`;
   if(!$('x-raw-d').open)return;
-  const types=['Cash USD','Gold'],tb=document.querySelector('#x-raw-table tbody');
+  const types=['Cash USD','Gold','Gold 24k','Gold 22k','Gold 21k','Gold 18k'],tb=document.querySelector('#x-raw-table tbody');
   tb.innerHTML=[...allData].sort((a,b)=>b.sortTs-a.sortTs).map(r=>{
     const ts=types.includes(r.type)?types:[...types,r.type];
     const cell=(f,w)=>`<td><input class="x-cell" data-f="${f}" inputmode="decimal" value="${esc(fmtN(r[f]))}"${w?` style="text-align:right"`:''}></td>`;
@@ -409,6 +443,404 @@ setInterval(()=>{if(cfg()&&!document.hidden)sync({quiet:true});},45000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cfg())sync({quiet:true});});
 window.addEventListener('online',()=>{if(cfg())sync({quiet:true});});
 
+/* ---------- gold valuation: market price instead of purchase price ---------- */
+const GKEY='lg-gold-v1',OZ=31.1034768;
+const gDefault={mode:'market',karat:24,manual:'',px:0,at:0};
+const gset=()=>{try{return Object.assign({},gDefault,JSON.parse(localStorage.getItem(GKEY)||'{}'));}catch(e){return Object.assign({},gDefault);}};
+const gsave=o=>{try{localStorage.setItem(GKEY,JSON.stringify(Object.assign(gset(),o)));}catch(e){}};
+/* Live and typed prices are turned into a 24k price per gram, then each gold entry is scaled by its own purity. */
+function px24(){
+  const g=gset();if(g.mode!=='market')return 0;
+  const m=num(g.manual);if(m>0)return m*24/g.karat;
+  return g.px;
+}
+const rowKarat=r=>{const m=/(\d{2})\s*k/i.exec(r.type||'');const k=m?+m[1]:0;return(k>=8&&k<=24)?k:gset().karat;};
+const baseCompute=computeAnalytics;
+computeAnalytics=function(rows){
+  const t=baseCompute(rows);t.goldCost=t.gold;t.goldPx=0;const p=px24();
+  if(p>0&&t.goldGrams>0){
+    let v=0;rows.forEach(r=>{if(!(r.name||'').includes('loan')&&(r.gold||0)>0)v+=r.gold*p*rowKarat(r)/24;});
+    t.gold=v;t.goldPx=v/t.goldGrams;t.net=t.cash+t.gold-t.loan;
+  }
+  return t;
+};
+const baseKPIs=updateKPIs;
+updateKPIs=function(t){
+  baseKPIs(t);
+  if(t.goldGrams>0)$('gold-sub').textContent=t.goldPx>0
+    ?`${t.goldGrams.toFixed(1)} g at ${money2(t.goldPx)}/g · ${signed0(t.gold-t.goldCost)} vs cost`
+    :`${t.goldGrams.toFixed(1)} g at purchase price`;
+};
+$('x-sync').insertAdjacentHTML('beforebegin',`<div class="section" id="x-gold"><div class="section-header"><h2>Gold valuation</h2><span class="hint" id="x-gold-status"></span></div>
+ <div class="kpi-card"><div class="kpi-sub" style="font-size:13px;margin:0 0 4px">Gold in your net worth follows today's market price, scaled by each entry's purity. Savings, targets and the monthly charts keep using what you paid.</div>
+ <label class="x-label" for="x-gold-mode">Value gold at</label><select id="x-gold-mode" class="x-input"><option value="market">Market price</option><option value="cost">Purchase price</option></select>
+ <label class="x-label" for="x-gold-karat">Default purity, for entries without one</label><select id="x-gold-karat" class="x-input"><option value="24">24k</option><option value="22">22k</option><option value="21">21k</option><option value="18">18k</option></select>
+ <label class="x-label" for="x-gold-manual">Or type today's price per gram at the default purity, in USD (optional)</label><input id="x-gold-manual" class="x-input" inputmode="decimal" autocomplete="off" placeholder="Leave empty to use the live price">
+ <div class="x-btns"><button type="button" id="x-gold-refresh">Refresh price</button></div></div></div>`);
+function goldStatus(extra){
+  const g=gset();let t;
+  if(g.mode!=='market')t='Using purchase prices';
+  else if(num(g.manual)>0)t=`Your price ${money2(num(g.manual))}/g at ${g.karat}k`;
+  else if(g.px>0){const d=new Date(g.at);t=`24k ${money2(g.px)}/g · ${p2(d.getHours())}:${p2(d.getMinutes())}`;}
+  else t='No price yet, using purchase prices';
+  $('x-gold-status').textContent=t+(extra?' · '+extra:'');
+}
+async function fetchGold(){
+  try{
+    const r=await fetch('https://api.gold-api.com/price/XAU',{cache:'no-store'});
+    const oz=Number((await r.json()).price);
+    if(!(oz>500&&oz<20000))return false;
+    gsave({px:oz/OZ,at:Date.now()});{const k=toYMD(Date.now()).slice(0,7),s=(hget().snap)||{};s[k]=oz/OZ;hsave({snap:s});}return true;
+  }catch(e){return false;}
+}
+async function refreshGold(){
+  if(gset().mode!=='market'||num(gset().manual)>0){goldStatus();return;}
+  const ok=await fetchGold();
+  goldStatus(ok?'':'live price unavailable');
+  if(!busy())renderAll();
+}
+const gm=gset();$('x-gold-mode').value=gm.mode;$('x-gold-karat').value=String(gm.karat);$('x-gold-manual').value=gm.manual;goldStatus();
+$('x-gold-mode').onchange=e=>{gsave({mode:e.target.value});goldStatus();renderAll();if(e.target.value==='market')refreshGold();};
+$('x-gold-karat').onchange=e=>{gsave({karat:+e.target.value});goldStatus();renderAll();};
+$('x-gold-manual').onchange=e=>{gsave({manual:e.target.value.trim()});goldStatus();renderAll();if(!e.target.value.trim())refreshGold();};
+$('x-gold-refresh').onclick=async()=>{const ok=await fetchGold();goldStatus(ok?'':'live price unavailable');renderAll();toast(ok?'Gold price refreshed':'Could not reach the price service. Type a price instead.');};
+setInterval(()=>{if(!document.hidden)refreshGold();},15*60000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshGold();});
+
+/* ---------- gold price history: monthly price, your gold value, and what moved it ---------- */
+const HKEY='lg-goldhist-v1';
+const hget=()=>{try{return JSON.parse(localStorage.getItem(HKEY)||'{}')||{};}catch(e){return {};}};
+const hsave=o=>{try{localStorage.setItem(HKEY,JSON.stringify(Object.assign(hget(),o)));}catch(e){}};
+async function fetchGoldHistory(force){
+  const h=hget();if(!force&&h.at&&Date.now()-h.at<12*3600*1000)return false;
+  try{
+    const arr=await(await fetch('https://freegoldapi.com/data/latest.json',{cache:'no-store'})).json();
+    if(!Array.isArray(arr))return false;
+    const sums={};
+    arr.forEach(x=>{const d=String(x.date||''),p=Number(x.price),k=d.slice(0,7);
+      if(d.length>=7&&k>='2024-01'&&p>500&&p<20000){const s=sums[k]||(sums[k]=[0,0]);s[0]+=p;s[1]++;}});
+    const m={};Object.keys(sums).forEach(k=>{m[k]=sums[k][0]/sums[k][1]/OZ;});   /* monthly average, USD per gram of 24k */
+    if(!Object.keys(m).length)return false;
+    hsave({at:Date.now(),m});return true;
+  }catch(e){return false;}
+}
+function monthPx(k){const h=hget();return(h.m&&h.m[k])||(h.snap&&h.snap[k])||0;}
+/* One row per month from the first gold purchase: price, value of the gold held, and the split of its change. */
+function goldMonthly(rows){
+  const g=rows.filter(r=>!(r.name||'').includes('loan')&&(r.gold||0)>0&&r.yyyyMM);
+  if(!g.length)return [];
+  const first=g.map(r=>r.yyyyMM).sort()[0],nowK=toYMD(Date.now()).slice(0,7);
+  const lastRow=g.map(r=>r.yyyyMM).sort().pop(),end=nowK>lastRow?nowK:lastRow;
+  const out=[];let pxPrev=0,unitsPrev=0;
+  for(let i=0,n=monthsBetween(first,end);i<=n;i++){
+    const k=addMonths(first,i);let px=monthPx(k);if(!px)px=pxPrev;
+    let units=0,cost=0,grams=0,newUnits=0;
+    g.forEach(r=>{if(r.yyyyMM<=k){const u=r.gold*rowKarat(r)/24;units+=u;grams+=r.gold;cost+=r.gold*(r.goldPrice||0);if(r.yyyyMM===k)newUnits+=u;}});
+    const value=px?units*px:null;
+    out.push({k,px:px||null,grams,cost,units,value,
+      priceEffect:(px&&pxPrev&&i>0)?unitsPrev*(px-pxPrev):(i===0&&px?0:null),
+      bought:px?newUnits*px:null});
+    if(px){pxPrev=px;}unitsPrev=units;
+  }
+  return out;
+}
+window.lgGoldMonthly=goldMonthly;
+document.getElementById('variance-section').insertAdjacentHTML('beforebegin',`<div class="section" id="x-goldhist" hidden>
+ <div class="section-header"><h2>Gold price</h2><span class="hint">monthly average, 24k, per gram</span></div>
+ <div class="chart-card"><div class="title">Price and what your gold is worth</div>
+  <div class="desc" id="x-goldhist-desc"></div><div class="chart-wrap tall"><canvas id="goldhist"></canvas></div></div>
+ <div class="table-container" style="margin-top:10px"><table id="x-gold-table" style="min-width:520px"><thead><tr><th>Month</th><th class="r">Price / g</th><th class="r">Price effect</th><th class="r">Bought</th><th class="r">Gold value</th></tr></thead><tbody></tbody></table></div>
+ <p class="x-note" id="x-goldhist-note"></p></div>`);
+function renderGoldChart(){
+  const sec=$('x-goldhist'),rows=goldMonthly(allData).filter(r=>r.px);
+  if(!rows.length){sec.hidden=true;return;}
+  sec.hidden=false;
+  const all=goldMonthly(allData).filter(r=>r.px),lab=r=>`${fmtMonthShort(r.k)} ’${r.k.slice(2,4)}`;
+  if(charts.goldhist)charts.goldhist.destroy();
+  charts.goldhist=new Chart($('goldhist'),{type:'line',
+    data:{labels:all.map(lab),datasets:[
+      {label:'Gold price per gram (24k)',data:all.map(r=>r.px),borderColor:C.gold,backgroundColor:'rgba(185,137,47,0.10)',fill:true,tension:0.3,borderWidth:2.4,pointRadius:2.5,yAxisID:'y'},
+      {label:'Your gold, market value',data:all.map(r=>r.value),borderColor:C.cash,tension:0.3,borderWidth:2.2,pointRadius:2.5,yAxisID:'y1'},
+      {label:'Your gold, what you paid',data:all.map(r=>r.cost),borderColor:'#9AA6B1',borderDash:[5,4],tension:0,borderWidth:1.8,pointRadius:0,yAxisID:'y1'}]},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      scales:{y:{position:'left',ticks:{callback:v=>'$'+Math.round(v)},grid:{color:'#F0F2F5'}},
+              y1:{position:'right',ticks:{callback:v=>'$'+Number(v).toLocaleString()},grid:{display:false}},x:{grid:{display:false}}},
+      plugins:{legend:{position:'bottom',labels:{boxWidth:14,boxHeight:2,padding:12,font:{size:11}}},
+        tooltip:{callbacks:{title:items=>fmtMonthFull(all[items[0].dataIndex].k),
+          label:c=>` ${c.dataset.label}: ${c.raw==null?'—':(c.datasetIndex===0?money2(c.raw):money0(c.raw))}`}}}}});
+  const last=all[all.length-1],prev=all[all.length-2];
+  $('x-goldhist-desc').textContent=prev?`Gold ${last.px>=prev.px?'rose':'fell'} ${(Math.abs(last.px/prev.px-1)*100).toFixed(1)}% last month, and your holding is worth ${money0(last.value)} against ${money0(last.cost)} paid.`
+    :`Your holding is worth ${money0(last.value)} against ${money0(last.cost)} paid.`;
+  $('x-gold-table').querySelector('tbody').innerHTML=[...all].reverse().map(r=>`<tr><td><strong>${lab(r)}</strong></td>
+    <td class="num">${money2(r.px)}</td>
+    <td class="num ${r.priceEffect==null?'':(r.priceEffect>=0?'pos':'neg')}">${r.priceEffect==null?'—':signed0(r.priceEffect)}</td>
+    <td class="num">${r.bought?signed0(r.bought):'—'}</td><td class="num">${money0(r.value)}</td></tr>`).join('');
+  const h=hget();
+  $('x-goldhist-note').textContent=h.m&&Object.keys(h.m).length
+    ?'Prices are monthly averages from freegoldapi.com, and the current month uses today’s price. Price effect is how much the gold you already held gained or lost. Bought is the value of gold added that month. A month with no price data repeats the last known price.'
+    :'Price history could not be loaded, so this only uses prices the app has seen since it started. Price effect is how much the gold you already held gained or lost.';
+}
+const prevRA=renderAll;
+renderAll=function(){prevRA();try{renderGoldChart();}catch(e){}};
+setInterval(()=>{if(!document.hidden)fetchGoldHistory().then(ok=>{if(ok&&!busy())renderAll();});},3600*1000);
+
+/* ---------- views, sortable tables, contribution tables, gold lots ---------- */
+(function(){
+const st=document.createElement('style');
+st.textContent=`
+.x-off{display:none!important}
+.x-tabs{display:flex;gap:6px;overflow-x:auto;margin:0 0 16px;padding:4px 0;position:sticky;top:0;z-index:40;background:var(--bg);-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.x-tabs::-webkit-scrollbar{display:none}
+.x-tabs button{flex:0 0 auto;padding:8px 16px;font-size:13px;font-weight:600;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;font-family:inherit;-webkit-tap-highlight-color:transparent}
+.x-tabs button.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+th.x-s{cursor:pointer;user-select:none;-webkit-user-select:none}
+th.x-s::after{content:" ↕";opacity:.3}
+th.x-asc::after{content:" ▲";opacity:1;color:var(--ink)}
+th.x-desc::after{content:" ▼";opacity:1;color:var(--ink)}
+td.x-click{cursor:pointer}
+td.x-click:not(:has(.badge)){text-decoration:underline dotted var(--muted);text-underline-offset:3px}
+tr.x-row{cursor:pointer}
+tr.x-row:active td{background:#F6F8FA}
+tr.x-on td{background:#EEF3F8}
+.x-sub{font-size:11px;font-weight:600;margin-top:1px}
+.x-lf{display:grid;grid-template-columns:repeat(3,1fr) auto;gap:8px;margin-bottom:8px;align-items:center}
+.x-lf .month-select{width:100%;min-width:0}
+.x-lf-sum{font-size:12px;color:var(--muted);margin:0 2px 10px}
+.x-h3{margin:20px 0 8px;font-family:"Newsreader",serif;font-weight:600;font-size:17px}
+`;
+document.head.appendChild(st);
+
+/* tabs */
+const VIEWS=[['overview','Overview'],['tables','Tables'],['gold','Gold'],['ledger','Ledger'],['data','Data']];
+const VMAP={
+  overview:['kpi-grid','filter-section','charts-section','insights-section'],
+  tables:['filter-section','bridge-section','x-ctc','trends-section','variance-section'],
+  gold:['x-gold','x-goldhist','x-lots'],
+  ledger:['filter-section','tx-section'],
+  data:['x-raw','x-sync','x-data']
+};
+const ALLV=[...new Set([].concat(...Object.values(VMAP)))];
+let view='overview';
+try{const v=localStorage.getItem('lg-view-v1');if(VMAP[v])view=v;}catch(e){}
+$('hero').insertAdjacentHTML('afterend',`<div class="x-tabs" id="x-tabs" role="tablist">${VIEWS.map(([k,l])=>`<button type="button" data-view="${k}" role="tab">${l}</button>`).join('')}</div>`);
+function applyView(){
+  $('x-tabs').hidden=$('hero').hidden;
+  $('x-tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
+  ALLV.forEach(id=>{const el=$(id);if(el)el.classList.toggle('x-off',!VMAP[view].includes(id));});
+  const tx=$('tx-search');if(tx)tx.classList.toggle('x-off',view!=='ledger');
+}
+function goView(v,scrollId){
+  view=v;try{localStorage.setItem('lg-view-v1',v);}catch(e){}
+  applyView();
+  const el=scrollId&&$(scrollId);
+  if(el)el.scrollIntoView({behavior:'smooth',block:'start'});else window.scrollTo({top:$('x-tabs').offsetTop-8,behavior:'smooth'});
+}
+$('x-tabs').addEventListener('click',e=>{const b=e.target.closest('button[data-view]');if(b)goView(b.dataset.view);});
+
+/* ledger filter bar */
+$('tx-search').insertAdjacentHTML('beforebegin',`<div class="x-lf" id="x-lf"><select class="month-select" id="x-lf-who" aria-label="Person"></select><select class="month-select" id="x-lf-cat" aria-label="Type"></select><select class="month-select" id="x-lf-year" aria-label="Year"></select><button type="button" class="x-link" id="x-lf-clear">Clear</button></div>`);
+$('tx-search').insertAdjacentHTML('afterend',`<p class="x-lf-sum" id="x-lf-sum"></p>`);
+const redrawLedger=()=>renderTable(getFilteredData());
+$('x-lf-who').onchange=e=>{LF.who=e.target.value;redrawLedger();};
+$('x-lf-cat').onchange=e=>{LF.cat=e.target.value;redrawLedger();};
+$('x-lf-year').onchange=e=>{LF.year=e.target.value;redrawLedger();};
+$('x-lf-clear').onclick=()=>{LF.who=LF.cat=LF.year='';txQuery='';$('tx-search').value='';redrawLedger();};
+$('tx-table').addEventListener('click',e=>{
+  const td=e.target.closest('td.x-click');if(!td)return;
+  if(td.dataset.lf==='who')LF.who=LF.who===td.dataset.val?'':td.dataset.val;
+  else LF.cat=LF.cat===td.dataset.val?'':td.dataset.val;
+  redrawLedger();
+});
+
+/* sorting: tap a column header, again to flip, a third time to reset */
+const REG=['tx-table','comparison-table','trend-table','x-gold-table','x-ctc-table','x-year-table','x-type-table','x-lots-table'];
+const ST={};
+function keyOf(td){
+  if(!td)return null;
+  if(td.dataset&&td.dataset.v!=null&&td.dataset.v!==''){const n=Number(td.dataset.v);return isNaN(n)?td.dataset.v:n;}
+  const s=(td.textContent||'').trim();
+  if(!s||s==='—')return null;
+  let m=/^(\d{2})\/(\d{2})\/(\d{4})/.exec(s);if(m)return +new Date(+m[3],+m[2]-1,+m[1]);
+  const t=s.replace(/[−–]/g,'-').replace(/[$,+%]/g,'').trim();
+  const n=parseFloat(t);
+  return (!isNaN(n)&&/^-?\d/.test(t))?n:s.toLowerCase();
+}
+function applySort(id){
+  const tb=$(id);if(!tb||!tb.tHead||!tb.tHead.rows[0])return;
+  const ths=[...tb.tHead.rows[0].cells];
+  const sig=ths.map(h=>h.textContent).join('|');
+  if(ST[id]&&ST[id].sig!==sig)delete ST[id];
+  ths.forEach(h=>{h.classList.remove('x-asc','x-desc');h.classList.toggle('x-s',!!h.textContent.trim());});
+  const s=ST[id];if(!s)return;
+  if(ths[s.c])ths[s.c].classList.add(s.d>0?'x-asc':'x-desc');
+  const body=tb.tBodies[0];
+  const rows=[...body.rows].filter(r=>r.cells.length>1);
+  rows.forEach((r,i)=>{if(r.dataset.i==null)r.dataset.i=i;});
+  const k=rows.map(r=>({r,k:keyOf(r.cells[s.c]),i:+r.dataset.i}));
+  k.sort((a,b)=>{
+    if(a.k==null&&b.k==null)return a.i-b.i;
+    if(a.k==null)return 1;if(b.k==null)return -1;
+    let c;
+    if(typeof a.k==='number'&&typeof b.k==='number')c=a.k-b.k;
+    else if(s.c===0&&(typeof a.k==='string'||typeof b.k==='string'))c=a.i-b.i;
+    else c=String(a.k).localeCompare(String(b.k));
+    return c?c*s.d:a.i-b.i;
+  });
+  k.forEach(x=>body.appendChild(x.r));
+}
+window.lgApplySort=applySort;
+document.addEventListener('click',e=>{
+  const th=e.target.closest('th');if(!th||!th.classList.contains('x-s'))return;
+  const tb=th.closest('table');if(!tb||!REG.includes(tb.id))return;
+  const c=th.cellIndex,s=ST[tb.id];
+  if(!s||s.c!==c)ST[tb.id]={c,d:1,sig:[...tb.tHead.rows[0].cells].map(h=>h.textContent).join('|')};
+  else if(s.d===1)s.d=-1;else delete ST[tb.id];
+  if(!ST[tb.id]){
+    const body=tb.tBodies[0];const rows=[...body.rows].filter(r=>r.dataset.i!=null).sort((a,b)=>a.dataset.i-b.dataset.i);
+    rows.forEach(r=>body.appendChild(r));
+  }
+  applySort(tb.id);
+});
+
+/* variance table: year filter */
+let VY='';
+$('btn-qoq').parentNode.insertAdjacentHTML('afterend',`<select class="month-select" id="x-var-year" aria-label="Year"></select>`);
+$('x-var-year').parentNode.style.cssText='display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+$('x-var-year').onchange=e=>{VY=e.target.value;filterVar();};
+function filterVar(){
+  const rows=document.querySelectorAll('#comparison-table tbody tr');
+  rows.forEach(r=>{r.hidden=!!VY&&r.cells.length>1&&!(r.cells[0].textContent||'').includes(VY);});
+}
+function fillVarYears(t){
+  const ys=[...new Set(t.keys.map(k=>k.slice(0,4)))].reverse();
+  if(VY&&!ys.includes(VY))VY='';
+  $('x-var-year').innerHTML=`<option value="">All years</option>`+ys.map(y=>`<option value="${y}">${y}</option>`).join('');
+  $('x-var-year').value=VY;
+}
+
+/* contribution-to-change tables */
+$('bridge-section').insertAdjacentHTML('afterend',`<div class="section" id="x-ctc">
+ <div class="section-header"><h2>Contribution to change</h2><select class="month-select" id="x-ctc-year" aria-label="Year"></select></div>
+ <div class="table-container"><table id="x-ctc-table" style="min-width:720px"><thead><tr><th>Month</th><th class="r">Guy cash</th><th class="r">Lea cash</th><th class="r">Gold bought</th><th class="r">Loans</th><th class="r">Saved</th><th class="r">Gold price</th><th class="r">Total change</th></tr></thead><tbody></tbody></table></div>
+ <p class="x-note" id="x-ctc-note"></p>
+ <h3 class="x-h3">By year</h3>
+ <div class="table-container"><table id="x-year-table" style="min-width:600px"><thead><tr><th>Year</th><th class="r">Guy</th><th class="r">Lea</th><th class="r">Guy share</th><th class="r">Loans</th><th class="r">Saved</th><th class="r">Closing balance</th></tr></thead><tbody></tbody></table></div>
+ <p class="x-note">Tap a year to open its tab at the top. 2026 includes the savings you had before January.</p>
+ <label class="x-label" for="x-jan26">January 2026 real saving, without the earlier savings (used for year-over-year)</label>
+ <input id="x-jan26" class="x-input" inputmode="decimal" autocomplete="off" placeholder="800">
+ <h3 class="x-h3">By type</h3>
+ <div class="table-container"><table id="x-type-table" style="min-width:560px"><thead><tr><th>Type</th><th class="r">Entries</th><th class="r">Paid</th><th class="r">Worth now</th><th class="r">Change</th><th class="r">Share</th></tr></thead><tbody></tbody></table></div>
+ <p class="x-note">Tap a type to see its entries in the Ledger. Gold is worth its market value when market pricing is on. Loans count as negative.</p>
+</div>`);
+let CY='';
+$('x-ctc-year').onchange=e=>{CY=e.target.value;renderCtc();};
+try{const j=parseFloat(localStorage.getItem('lg-jan26-v1'));$('x-jan26').value=isNaN(j)?'800':String(j);}catch(e){$('x-jan26').value='800';}
+$('x-jan26').onchange=e=>{const v=num(e.target.value);try{localStorage.setItem('lg-jan26-v1',String(v));}catch(x){}renderAll();};
+function renderCtc(){
+  if(!allData.length)return;
+  const f=getFilteredData(),t=computeAnalytics(f);
+  const ys=[...new Set(t.keys.map(k=>k.slice(0,4)))].reverse();
+  if(CY&&!ys.includes(CY))CY='';
+  $('x-ctc-year').innerHTML=`<option value="">All years</option>`+ys.map(y=>`<option value="${y}">${y}</option>`).join('');
+  $('x-ctc-year').value=CY;
+  let pe={};
+  if(currentFilter==='all'&&window.lgGoldMonthly){try{window.lgGoldMonthly(allData).forEach(r=>{if(r.priceEffect!=null)pe[r.k]=r.priceEffect;});}catch(e){}}
+  const tb=document.querySelector('#x-ctc-table tbody');tb.innerHTML='';
+  const sg=v=>`<span class="${v>=0?'pos':'neg'}">${signed0(v)}</span>`;
+  let sumS=0,sumP=0;
+  [...t.keys].reverse().filter(k=>!CY||k.startsWith(CY)).forEach(k=>{
+    const c=t.comp[k],p=pe[k];sumS+=c.delta;sumP+=p||0;
+    const tr=document.createElement('tr');tr.className='x-row'+(k===bridgeMonth?' x-on':'');tr.dataset.k=k;
+    tr.innerHTML=`<td data-v="${k.replace('-','')}"><strong>${fmtMonthFull(k)}</strong></td><td class="num" data-v="${c.guyCash}">${signed0(c.guyCash)}</td><td class="num" data-v="${c.leaCash}">${signed0(c.leaCash)}</td>
+      <td class="num" data-v="${c.gold}">${signed0(c.gold)}</td><td class="num" data-v="${c.loan}">${c.loan?signed0(c.loan):'—'}</td><td class="num" data-v="${c.delta}"><strong>${sg(c.delta)}</strong></td>
+      <td class="num" data-v="${p==null?'':p}">${p==null?'—':sg(p)}</td><td class="num" data-v="${c.delta+(p||0)}">${sg(c.delta+(p||0))}</td>`;
+    tb.appendChild(tr);
+  });
+  $('x-ctc-note').textContent=`Saved is what went in. Gold price is what the gold you already held gained or lost with the market (shown for Everyone only). Together they give the total change. ${CY||'All time'}: saved ${signed0(sumS)}${Object.keys(pe).length?`, gold price ${signed0(sumP)}`:''}. Tap a month to open it in the chart above.`;
+  /* by year */
+  const yb=document.querySelector('#x-year-table tbody');yb.innerHTML='';
+  const Y={};t.keys.forEach(k=>{const y=k.slice(0,4),c=t.comp[k];const o=Y[y]||(Y[y]={g:0,l:0,loan:0,s:0,last:k});o.g+=c.guyTotal;o.l+=c.leaTotal;o.loan+=c.loan;o.s+=c.delta;o.last=k;});
+  Object.keys(Y).sort().reverse().forEach(y=>{
+    const o=Y[y],tot=o.g+o.l,tr=document.createElement('tr');tr.className='x-row';tr.dataset.y=y;
+    tr.innerHTML=`<td data-v="${y}"><strong>${y}</strong></td><td class="num" data-v="${o.g}">${money0(o.g)}</td><td class="num" data-v="${o.l}">${money0(o.l)}</td>
+      <td class="num" data-v="${tot>0?o.g/tot:''}">${tot>0?Math.round(o.g/tot*100)+'%':'—'}</td><td class="num" data-v="${o.loan}">${o.loan?signed0(o.loan):'—'}</td>
+      <td class="num" data-v="${o.s}"><strong>${sg(o.s)}</strong></td><td class="num" data-v="${t.cumulative[o.last]}">${money0(t.cumulative[o.last])}</td>`;
+    yb.appendChild(tr);
+  });
+  /* by type */
+  const T={};
+  const add=(name,paid,now,n)=>{const o=T[name]||(T[name]={n:0,paid:0,now:0});o.n+=n;o.paid+=paid;o.now+=now;};
+  f.forEach(d=>{
+    if(isLoanRow(d))add('Loan',d.usd||0,d.usd||0,1);
+    else if(isGoldRow(d)){const gp=(d.gold||0)*(d.goldPrice||0);add(kOf(d)?`Gold ${kOf(d)}k`:'Gold',gp,goldNow(d),1);if(d.usd)add('Cash',d.usd,d.usd,0);}
+    else add('Cash',d.usd||0,d.usd||0,1);
+  });
+  const tot=Object.values(T).reduce((a,o)=>a+o.now,0);
+  const tyb=document.querySelector('#x-type-table tbody');tyb.innerHTML='';
+  Object.keys(T).sort((a,b)=>T[b].now-T[a].now).forEach(name=>{
+    const o=T[name],ch=o.paid?o.now/o.paid-1:null,tr=document.createElement('tr');tr.className='x-row';tr.dataset.cat=name;
+    tr.innerHTML=`<td data-v="${esc(name)}"><span class="badge ${name==='Loan'?'loan':name==='Cash'?'cash':'gold'}">${esc(name)}</span></td><td class="num" data-v="${o.n}">${o.n}</td><td class="num" data-v="${o.paid}">${signed0(o.paid).replace('+','')}</td>
+      <td class="num" data-v="${o.now}">${signed0(o.now).replace('+','')}</td><td class="num" data-v="${ch==null?'':ch}">${ch==null||Math.abs(ch)<1e-9?'—':`<span class="${ch>=0?'pos':'neg'}">${(ch>=0?'+':'−')+Math.abs(ch*100).toFixed(1)}%</span>`}</td>
+      <td class="num" data-v="${tot?o.now/tot:''}">${tot?Math.round(o.now/tot*100)+'%':'—'}</td>`;
+    tyb.appendChild(tr);
+  });
+}
+$('x-ctc').addEventListener('click',e=>{
+  const tr=e.target.closest('tr.x-row');if(!tr)return;
+  if(tr.dataset.k){
+    bridgeMonth=tr.dataset.k;const sel=$('bridge-month');sel.value=bridgeMonth;
+    drawBridge(computeAnalytics(getFilteredData()));
+    document.querySelectorAll('#x-ctc-table tr.x-row').forEach(r=>r.classList.toggle('x-on',r===tr));
+    $('bridge-section').scrollIntoView({behavior:'smooth',block:'start'});
+  }else if(tr.dataset.y){
+    heroYear=+tr.dataset.y;renderAll();window.scrollTo({top:0,behavior:'smooth'});
+  }else if(tr.dataset.cat){
+    LF.who='';LF.year='';LF.cat=tr.dataset.cat;txQuery='';$('tx-search').value='';
+    redrawLedger();goView('ledger','tx-section');
+  }
+});
+
+/* gold lots: each gold entry, valued at today's market */
+$('x-goldhist').insertAdjacentHTML('afterend',`<div class="section" id="x-lots"><div class="section-header"><h2>Gold purchases</h2><span class="hint" id="x-lots-hint"></span></div>
+ <div class="table-container"><table id="x-lots-table" style="min-width:720px"><thead><tr><th>Date</th><th>Who</th><th class="r">Grams</th><th class="r">Purity</th><th class="r">Paid per g</th><th class="r">Paid</th><th class="r">Worth now</th><th class="r">Gain</th></tr></thead><tbody></tbody></table></div>
+ <p class="x-note">Tap a purchase to edit it. Worth now uses the live or typed price and each entry's own purity.</p></div>`);
+function renderLots(){
+  const tb=document.querySelector('#x-lots-table tbody');tb.innerHTML='';
+  const rows=allData.filter(isGoldRow).sort((a,b)=>b.sortTs-a.sortTs);
+  let g=0,paid=0,now=0;
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="8" class="empty-note">No gold entries yet</td></tr>`;$('x-lots-hint').textContent='';return;}
+  rows.forEach(d=>{
+    const p=(d.gold||0)*(d.goldPrice||0),n=goldNow(d),gain=p?n/p-1:null,k=kOf(d)||gset().karat;
+    g+=d.gold;paid+=p;now+=n;
+    const tr=document.createElement('tr');tr.className='x-row';tr.dataset.id=d.id;
+    tr.innerHTML=`<td style="white-space:nowrap">${esc((d.date||'').split(' ')[0])}</td><td style="text-transform:capitalize;font-weight:500">${esc(d.name)}</td>
+      <td class="num" data-v="${d.gold}">${d.gold.toFixed(2)} g</td><td class="num" data-v="${k}">${k}k${kOf(d)?'':' <span class="hint">default</span>'}</td>
+      <td class="num" data-v="${d.goldPrice||0}">${d.goldPrice?money2(d.goldPrice):'—'}</td><td class="num" data-v="${p}">${money2(p)}</td>
+      <td class="num" data-v="${n}">${money2(n)}</td><td class="num" data-v="${gain==null?'':gain}">${gain==null?'—':`<span class="${gain>=0?'pos':'neg'}">${(gain>=0?'+':'−')+Math.abs(gain*100).toFixed(1)}%</span>`}</td>`;
+    tb.appendChild(tr);
+  });
+  $('x-lots-hint').textContent=`${g.toFixed(1)} g · paid ${money0(paid)} · worth ${money0(now)} (${now>=paid?'+':'−'}${paid?Math.abs((now/paid-1)*100).toFixed(1):0}%)`;
+}
+$('x-lots').addEventListener('click',e=>{
+  const tr=e.target.closest('tr.x-row');if(!tr)return;
+  const row=allData.find(r=>r.id===tr.dataset.id);if(row)openSheet(row);
+});
+
+const prevRA2=renderAll;
+renderAll=function(){
+  prevRA2();
+  try{
+    if(allData.length){
+      const t=computeAnalytics(getFilteredData());
+      if(t.keys.length){fillVarYears(t);renderCtc();filterVar();renderLots();}
+    }
+    REG.forEach(applySort);
+    applyView();
+  }catch(e){console.error(e);}
+};
+window.lgGoView=goView;
+})();
+
 /* ---------- start ---------- */
 try{
   const m=location.hash.match(/^#join=(.+)$/);
@@ -429,4 +861,6 @@ persist();
 const c0=cfg();if(c0){$('x-sync-url').value=c0.url;$('x-sync-token').value=c0.token;}
 status();renderAll();
 if(c0)sync({quiet:true});
+refreshGold();
+fetchGoldHistory().then(ok=>{if(ok&&!busy())renderAll();});
 })();

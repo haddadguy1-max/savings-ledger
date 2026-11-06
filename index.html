@@ -387,17 +387,18 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
         <thead>
           <tr>
             <th>Period</th>
-            <th class="r">Net worth</th>
-            <th class="r">Δ</th>
-            <th class="r">Δ%</th>
+            <th class="r">Balance</th>
+            <th class="r">Change</th>
+            <th class="r">Change %</th>
             <th class="r">YoY</th>
-            <th class="r">Guy</th>
-            <th class="r">Lea</th>
+            <th class="r">Guy added</th>
+            <th class="r">Lea added</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
     </div>
+    <p class="x-note" style="font-size:12px;color:var(--muted);margin:10px 2px 0;line-height:1.5">Balance is your net savings with gold counted at what you paid, the same basis as the targets and the phased goal. The top card values gold at market. Guy added and Lea added are what each put in during that period, gold included.</p>
   </div>
 
   <!-- TRANSACTIONS -->
@@ -414,11 +415,13 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
             <th>Name</th>
             <th class="r">USD</th>
             <th class="r">Gold (g)</th>
-            <th class="r">Gold value</th>
-            <th>Category</th>
+            <th class="r">Gold paid</th>
+            <th class="r">Gold now</th>
+            <th>Type</th>
+            <th></th>
           </tr>
         </thead>
-        <tbody><tr><td colspan="6" class="empty-note">Upload your CSV to open the ledger</td></tr></tbody>
+        <tbody><tr><td colspan="8" class="empty-note">Tap Add entry or upload your CSV to open the ledger</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -608,6 +611,28 @@ const fmtK = v => v >= 1000 ? '$' + (v/1000).toFixed(v >= 10000 ? 0 : 1).replace
 const pad2 = n => String(n).padStart(2,'0');
 const pctS = x => (x>=0?'+':'−') + Math.abs(x*100).toFixed(1) + '%';
 const ratio = (a,b) => (b != null && b > 0) ? a/b - 1 : null;
+/* YoY works on what was saved inside the year, so the opening balance never inflates it, and it follows
+   the active filter (Guy against Guy, Lea against Lea). January 2026 held the savings from before, so its
+   real saving is a setting (default $800), scaled to the filter in use. */
+function jan26(){ try{ const v = parseFloat(localStorage.getItem('lg-jan26-v1')); return isNaN(v) ? 800 : v; }catch(e){ return 800; } }
+function deltaOf(t,k){
+  const c = t.comp[k]; if(!c) return 0;
+  if(k === '2026-01'){
+    const all = computeAnalytics(allData).comp['2026-01'];
+    if(all && all.delta) return c.delta * (jan26() / all.delta);
+  }
+  return c.delta;
+}
+function ytd(t,Y,mi){ let s = 0; for(let m=1;m<=mi;m++) s += deltaOf(t, `${Y}-${pad2(m)}`); return s; }
+function hasYear(t,Y){ return t.keys.some(k=>k.startsWith(Y+'-')); }
+function yoyYtd(t,k){
+  const Y = +k.slice(0,4), mi = +k.slice(5);
+  return hasYear(t,Y-1) ? ratio(ytd(t,Y,mi), ytd(t,Y-1,mi)) : null;
+}
+function goalRatio(Y,path,t,k,current){
+  const first = +t.keys[0].slice(0,4);
+  return Y > first ? ratio(current - path.firstVal, path.at(k) - path.firstVal) : ratio(current, path.at(k));
+}
 function cumAt(t,k){ let v=0; for(const kk of t.keys){ if(kk<=k) v=t.cumulative[kk]; else break; } return v; }
 function yearsAvail(t){
   const first = +t.keys[0].slice(0,4);
@@ -670,7 +695,8 @@ function updateHero(t){
   showParts(true);
 
   const tg = path.tg, goal = path.goal;
-  const keysY = t.keys.filter(k=>k<=endKey);
+  const allKeys = currentFilter === 'all' ? t.keys : computeAnalytics(allData).keys;   // a filter never moves "today"
+  const keysY = allKeys.filter(k=>k<=endKey);
   const lastKey = keysY.length ? keysY[keysY.length-1] : null;
   const started = !!lastKey && lastKey >= `${Y}-01`;
   const firstKey = path.firstKey, firstVal = path.firstVal;
@@ -683,7 +709,7 @@ function updateHero(t){
   const actual = axis.map(k => k <= refKey ? cumAt(t,k) : null);
   const glide = axis.map(k => path.at(k));
 
-  const lastN = keysY.map(k=>t.comp[k].delta).slice(-3);
+  const lastN = keysY.map(k=>t.comp[k] ? t.comp[k].delta : 0).slice(-3);
   const runRate = lastN.length ? lastN.reduce((a,b)=>a+b,0)/lastN.length : 0;
   const remaining = Math.max(0, monthsBetween(refKey, endKey));
   const projection = axis.map(k => { const i = monthsBetween(refKey,k); return i < 0 ? null : current + runRate * i; });
@@ -698,16 +724,16 @@ function updateHero(t){
   if(!started && Y > firstYear){
     tiles(money0(current), 'opening balance', '—', `Starts January ${Y}`, '—', `Target ${fmtK(goal)}`);
   } else {
-    const mi = +refKey.slice(5), lyKey = `${P}-${pad2(mi)}`;
-    const hasLY = Y > firstYear && lyKey >= t.keys[0];
-    const bLY = hasLY ? cumAt(t,lyKey) : null;
-    const yoy = ratio(current, bLY), vsg = ratio(current, glideNow);
+    const mi = +refKey.slice(5), filt = currentFilter !== 'all';
+    const sY = ytd(t,Y,mi), sP = hasYear(t,P) ? ytd(t,P,mi) : null;
+    const yoy = sP == null ? null : ratio(sY, sP);
+    const vsg = filt ? null : goalRatio(Y,path,t,refKey,current);
     tiles(money0(current),
-          Y > firstYear ? `${money0(current - opening)} of it saved in ${Y}` : 'balance since the start',
+          Y > firstYear ? `${money0(sY)} of it saved in ${Y}` : 'balance since the start',
           yoy == null ? '—' : pctS(yoy),
-          yoy == null ? 'No earlier year to compare yet' : `${signed0(current-bLY)} vs ${MONTHS_S[mi-1]} ${P} (${money0(bLY)})`,
+          sP == null ? 'No earlier year to compare yet' : `${money0(sY)} saved vs ${money0(sP)} by ${MONTHS_S[mi-1]} ${P}`,
           vsg == null ? '—' : pctS(vsg),
-          `${signed0(pace)} vs the path (${money0(glideNow)})`,
+          filt ? 'Targets cover both of you' : `${signed0(pace)} vs the path (${money0(glideNow)})`,
           yoy == null ? '' : (yoy >= 0 ? ' good' : ' bad'),
           vsg == null ? '' : (vsg >= 0 ? ' good' : ' bad'));
   }
@@ -1030,9 +1056,9 @@ function updateComparisonTable(t){
       const change = curr - prev;
       const ly = addMonths(k,-12);
       rows.push({
-        period: fmtMonthFull(k), value: curr, change,
+        ord: i, period: fmtMonthFull(k), value: curr, change,
         pct: prev !== 0 ? change/prev*100 : null,
-        yoy: ly >= keys[0] ? ratio(curr, cumAt(t,ly)) : null,
+        yoy: yoyYtd(t,k),
         guy: t.comp[k].guyTotal, lea: t.comp[k].leaTotal
       });
     });
@@ -1042,7 +1068,7 @@ function updateComparisonTable(t){
     keys.forEach(k=>{
       const q = quarterOf(k);
       if(!qmap[q]){ qmap[q] = {last:0, guy:0, lea:0}; qorder.push(q); }
-      qmap[q].last = t.cumulative[k];
+      qmap[q].last = t.cumulative[k]; qmap[q].lastKey = k;
       qmap[q].guy += t.comp[k].guyTotal;
       qmap[q].lea += t.comp[k].leaTotal;
     });
@@ -1052,9 +1078,9 @@ function updateComparisonTable(t){
       const change = curr - prev;
       const pq = q.replace(/\d{4}$/, y => String(+y-1));
       rows.push({
-        period: q, value: curr, change,
+        ord: i, period: q, value: curr, change,
         pct: prev !== 0 ? change/prev*100 : null,
-        yoy: qmap[pq] ? ratio(curr, qmap[pq].last) : null,
+        yoy: qmap[pq] ? yoyYtd(t, qmap[q].lastKey) : null,
         guy: qmap[q].guy, lea: qmap[q].lea
       });
     });
@@ -1064,7 +1090,7 @@ function updateComparisonTable(t){
     const cls = r.change >= 0 ? 'pos' : 'neg';
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><strong>${r.period}</strong></td>
+      <td data-v="${r.ord}"><strong>${r.period}</strong></td>
       <td class="num">${money2(r.value)}</td>
       <td class="num ${cls}">${signed0(r.change)}</td>
       <td class="num ${cls}">${r.pct == null ? '—' : (r.pct>=0?'+':'−') + Math.abs(r.pct).toFixed(1) + '%'}</td>
@@ -1154,15 +1180,16 @@ function updateTrends(t, rows){
   } else {
     const Y = heroYear || new Date().getFullYear(), P = Y-1;
     $('tr-title').innerText = `${Y} vs ${P}, month by month`;
-    thead.innerHTML = `<tr><th>Month</th><th class="r">${P} balance</th><th class="r">${Y} balance</th><th class="r">YoY</th><th class="r">vs phased goal</th></tr>`;
-    const path = pathFor(Y,t), firstAll = t.keys[0], lastAll = t.keys[t.keys.length-1];
+    thead.innerHTML = `<tr><th>Month</th><th class="r">${P} saved to date</th><th class="r">${Y} saved to date</th><th class="r">YoY</th><th class="r">vs phased goal</th></tr>`;
+    const path = pathFor(Y,t), allT = currentFilter === 'all' ? t : computeAnalytics(allData), firstAll = allT.keys[0], lastAll = allT.keys[allT.keys.length-1];
     const m2 = [];
     for(let m=1;m<=12;m++){
       const kp = `${P}-${pad2(m)}`, ky = `${Y}-${pad2(m)}`;
-      const bP = (kp>=firstAll && kp<=lastAll) ? cumAt(t,kp) : null;
-      const bY = t.comp[ky] || (ky>=firstAll && ky<=lastAll) ? cumAt(t,ky) : null;
-      const pa = path ? path.at(ky) : null;
-      m2.push({m, bP, bY, pa, yoy: bY!=null ? ratio(bY,bP) : null, vsg: bY!=null ? ratio(bY,pa) : null, has: !!t.comp[ky]});
+      const bP = (kp>=firstAll && kp<=lastAll) ? ytd(t,P,m) : null;
+      const bY = (ky>=firstAll && ky<=lastAll) ? ytd(t,Y,m) : null;
+      const base = (path && Y > +firstAll.slice(0,4)) ? path.firstVal : 0;
+      const pa = path ? path.at(ky) - base : null;
+      m2.push({m, bP, bY, pa, yoy: bY!=null ? ratio(bY,bP) : null, vsg: (bY!=null && currentFilter==='all') ? ratio(bY,pa) : null, has: ky >= firstAll && ky <= lastAll});
     }
     const reached = m2.filter(r=>r.has);
     if(!reached.length){
@@ -1173,8 +1200,8 @@ function updateTrends(t, rows){
       $('tr-head').innerText = r.yoy == null ? '—' : `${pctS(r.yoy)} vs last year`;
       $('tr-sub').innerText = (r.bP == null
         ? `No ${mn} ${P} to compare with yet.`
-        : `${money0(r.bY)} in ${mn} ${Y} against ${money0(r.bP)} in ${mn} ${P}, ${signed0(r.bY-r.bP)}.`)
-        + (r.vsg == null ? '' : ` ${pctS(r.vsg)} vs the phased goal of ${money0(r.pa)}.`);
+        : `${money0(r.bY)} saved by ${mn} ${Y} against ${money0(r.bP)} by ${mn} ${P}, ${signed0(r.bY-r.bP)}.`)
+        + (r.vsg == null ? '' : ` ${pctS(r.vsg)} vs the phased goal of ${money0(r.pa)} saved by then.`);
     }
     m2.forEach(r=>{
       if(r.bP === null && r.bY === null) return;
@@ -1186,9 +1213,9 @@ function updateTrends(t, rows){
       tbody.appendChild(tr);
     });
     const ds = [
-      {label:`${P} balance`, data:m2.map(r=>r.bP), borderColor:'#9AA6B1', backgroundColor:'rgba(154,166,177,0.1)', fill:true, tension:0.3, borderWidth:2, pointRadius:2.5},
-      {label:`${Y} balance`, data:m2.map(r=>r.bY), borderColor:C.cash, backgroundColor:'rgba(47,93,138,0.08)', fill:true, tension:0.3, borderWidth:2.4, pointRadius:2.5}];
-    if(path) ds.push({label:'Phased goal', data:m2.map(r=>r.pa), borderColor:C.gold, borderDash:[6,5], borderWidth:1.8, pointRadius:0, fill:false, tension:0});
+      {label:`${P} saved`, data:m2.map(r=>r.bP), borderColor:'#9AA6B1', backgroundColor:'rgba(154,166,177,0.1)', fill:true, tension:0.3, borderWidth:2, pointRadius:2.5},
+      {label:`${Y} saved`, data:m2.map(r=>r.bY), borderColor:C.cash, backgroundColor:'rgba(47,93,138,0.08)', fill:true, tension:0.3, borderWidth:2.4, pointRadius:2.5}];
+    if(path && currentFilter==='all') ds.push({label:'Phased goal', data:m2.map(r=>r.pa), borderColor:C.gold, borderDash:[6,5], borderWidth:1.8, pointRadius:0, fill:false, tension:0});
     cfgChart = { type:'line', data:{ labels:MONTHS_S, datasets:ds },
       options:{ responsive:true, maintainAspectRatio:false,
         scales:{ y:{ticks:{callback:tick}, grid:{color:'#F0F2F5'}}, x:{grid:{display:false}} },
