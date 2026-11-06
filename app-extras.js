@@ -123,7 +123,7 @@ function save(){
 }
 function loadSaved(){try{const r=JSON.parse(localStorage.getItem(KEY)||'[]');return Array.isArray(r)?r:[];}catch(e){return [];}}
 function status(){
-  $('file-info').textContent=(allData.length?`${allData.length} entries`:'No entries yet')+(cfg()?` · ${syncState||'Sheets sync on'}`:' · saved on this device');
+  $('file-info').textContent=(allData.length?`${allData.length} entries`:'No entries yet')+(cfg()?` · ${syncState||'Signed in'}`:' · saved on this phone');
   const b=readPrefs().lastBackup;$('x-data-hint').textContent=b?`Last backup ${b}`:'No backup yet';
 }
 function setData(rows){allData=rows;save();status();renderAll();}
@@ -364,17 +364,20 @@ if($('add-btn'))$('add-btn').onclick=()=>openSheet(null);
 
 
 /* ---------- Google Sheets sync ---------- */
-$('x-data').insertAdjacentHTML('beforebegin',`<div class="section" id="x-sync"><div class="section-header"><h2>Google Sheets sync</h2><span class="hint" id="x-sync-status"></span></div>
- <div class="kpi-card"><div class="kpi-sub" style="font-size:13px;margin:0 0 4px">Every entry is copied to your Google Sheet automatically, and changes made by Lea, on another phone or in the Sheet itself flow back here. Treat the web app link and secret token like a password.</div>
- <label class="x-label" for="x-sync-url">Web app link</label><input id="x-sync-url" class="x-input" autocomplete="off" autocapitalize="off" placeholder="https://script.google.com/macros/s/…/exec">
- <label class="x-label" for="x-sync-token">Secret token</label><input id="x-sync-token" type="password" class="x-input" autocomplete="off" autocapitalize="off">
- <div class="x-btns"><button type="button" id="x-sync-connect">Connect</button><button type="button" id="x-sync-invite">Copy invite link</button><button type="button" id="x-sync-now">Sync now</button><button type="button" id="x-sync-off" class="danger">Disconnect</button></div></div></div>`);
+$('x-data').insertAdjacentHTML('beforebegin',`<div class="section" id="x-sync"><div class="section-header"><h2>Sign in</h2><span class="hint" id="x-sync-status"></span></div>
+ <div class="kpi-card"><div class="kpi-sub" style="font-size:13px;margin:0 0 4px">Sign in to share one ledger between your phones. Everything you add is saved to it automatically, and what Lea adds appears here. Keep your login and password private.</div>
+ <label class="x-label" for="x-sync-url">Ledger login</label><input id="x-sync-url" class="x-input" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Your ledger login">
+ <label class="x-label" for="x-sync-token">Password</label><input id="x-sync-token" type="password" class="x-input" autocomplete="current-password" autocapitalize="off">
+ <div class="x-btns"><button type="button" id="x-sync-connect">Sign in</button><button type="button" id="x-sync-invite">Invite someone</button><button type="button" id="x-sync-now">Sync now</button><button type="button" id="x-sync-off" class="danger">Sign out</button></div></div></div>`);
+/* the login is the ledger's ID, a full link also works; both end up as the same address */
+const toUrl=v=>{v=String(v||'').trim();if(/^https:\/\/script\.google\.com\/\S+/.test(v))return v;return /^[A-Za-z0-9_-]{20,}$/.test(v)?'https://script.google.com/macros/s/'+v+'/exec':'';};
+const toLogin=u=>{const m=/\/macros\/s\/([^/]+)/.exec(u||'');return m?m[1]:(u||'');};
 const cfg=()=>{try{return JSON.parse(localStorage.getItem(SYNC)||'null');}catch(e){return null;}};
 const isTrue=v=>v===true||v===1||String(v).toLowerCase()==='true';
 function setSyncState(t){syncState=t;const el=$('x-sync-status');if(el)el.textContent=t;status();}
 function scheduleSync(){if(!cfg())return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>sync({quiet:true}),1500);}
 function busy(){const a=document.activeElement;return !$('x-sheet').hidden||!!(a&&a.classList&&a.classList.contains('x-cell'));}
-function errText(e){return e.message==='unauthorized'?'Wrong secret token.':e.message==='bad-reply'?'The Sheet did not answer. Check the web app link and that access is set to Anyone.':'Offline. Changes are saved here and will sync later.';}
+function errText(e){return e.message==='unauthorized'?'Wrong password.':e.message==='bad-reply'?'Could not sign in. Check the ledger login.':'Offline. Changes are saved here and will sync later.';}
 async function api(method,body){
   const c=cfg();let r,j;
   try{
@@ -421,32 +424,32 @@ async function sync(o){
   finally{syncing=false;if(syncAgain){syncAgain=false;scheduleSync();}}
 }
 $('x-sync-connect').onclick=async()=>{
-  const url=$('x-sync-url').value.trim(),token=$('x-sync-token').value.trim();
-  if(!/^https:\/\/script\.google\.com\/\S+/.test(url)||!token){toast('Paste the web app link and your secret token.');return;}
+  const url=toUrl($('x-sync-url').value),token=$('x-sync-token').value.trim();
+  if(!url||!token){toast('Enter your ledger login and password.');return;}
   localStorage.setItem(SYNC,JSON.stringify({url,token}));setSyncState('Connecting…');
   let adopt=false;
   try{
     const remote=((await api('GET')).rows||[]).filter(x=>!isTrue(x.deleted));
-    if(remote.length&&allData.length)adopt=confirm(`The Sheet already has ${remote.length} rows and this device has ${allData.length}.\n\nOK: use the Sheet's data and replace this device's.\nCancel: merge both (can create duplicates).`);
+    if(remote.length&&allData.length)adopt=confirm(`This ledger already has ${remote.length} entries and this phone has ${allData.length}.\n\nOK: use the ledger's entries and replace this phone's.\nCancel: merge both (can create duplicates).`);
   }catch(e){localStorage.removeItem(SYNC);setSyncState('');status();toast(errText(e));return;}
   await sync({manual:true,adopt});
 };
 $('x-sync-invite').onclick=async()=>{
-  const c=cfg();if(!c){toast('Connect to your Sheet first.');return;}
+  const c=cfg();if(!c){toast('Sign in first.');return;}
   const link=location.origin+location.pathname+'#join='+btoa(unescape(encodeURIComponent(JSON.stringify({u:c.url,t:c.token}))));
-  try{await navigator.clipboard.writeText(link);toast('Invite link copied. Send it privately: anyone with it can edit the ledger.');}
-  catch(e){prompt('Copy this invite link and send it privately:',link);}
+  try{await navigator.clipboard.writeText(link);toast('Invite copied. Send it privately: anyone with it signs in and can edit the ledger.');}
+  catch(e){prompt('Copy this invite and send it privately:',link);}
 };
-$('x-sync-now').onclick=()=>{if(!cfg()){toast('Connect to your Sheet first.');return;}sync({manual:true});};
-$('x-sync-off').onclick=()=>{localStorage.removeItem(SYNC);$('x-sync-token').value='';setSyncState('');status();toast('Disconnected. Your data stays on this device.');};
+$('x-sync-now').onclick=()=>{if(!cfg()){toast('Sign in first.');return;}sync({manual:true});};
+$('x-sync-off').onclick=()=>{localStorage.removeItem(SYNC);$('x-sync-token').value='';setSyncState('');status();toast('Signed out. Your entries stay on this phone.');};
 setInterval(()=>{if(cfg()&&!document.hidden)sync({quiet:true});},45000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cfg())sync({quiet:true});});
 window.addEventListener('online',()=>{if(cfg())sync({quiet:true});});
 
 /* ---------- gold valuation: market price instead of purchase price ---------- */
 const GKEY='lg-gold-v1',OZ=31.1034768;
-const gDefault={mode:'market',karat:24,manual:'',px:0,at:0};
-const gset=()=>{try{return Object.assign({},gDefault,JSON.parse(localStorage.getItem(GKEY)||'{}'));}catch(e){return Object.assign({},gDefault);}};
+const gDefault={mode:'market',karat:21,manual:'',px:0,at:0};
+const gset=()=>{try{const o=Object.assign({},gDefault,JSON.parse(localStorage.getItem(GKEY)||'{}'));if(!o.kset)o.karat=21;return o;}catch(e){return Object.assign({},gDefault);}};   /* 21k until someone picks another purity */
 const gsave=o=>{try{localStorage.setItem(GKEY,JSON.stringify(Object.assign(gset(),o)));}catch(e){}};
 /* Live and typed prices are turned into a 24k price per gram, then each gold entry is scaled by its own purity. */
 function px24(){
@@ -473,12 +476,19 @@ updateKPIs=function(t){
 };
 $('x-sync').insertAdjacentHTML('beforebegin',`<div class="section" id="x-gold"><div class="section-header"><h2>Gold valuation</h2><span class="hint" id="x-gold-status"></span></div>
  <div class="kpi-card"><div class="kpi-sub" style="font-size:13px;margin:0 0 4px">Gold in your net worth follows today's market price, scaled by each entry's purity. Savings, targets and the monthly charts keep using what you paid.</div>
+ <div id="x-gold-now" class="x-goldnow"></div>
  <label class="x-label" for="x-gold-mode">Value gold at</label><select id="x-gold-mode" class="x-input"><option value="market">Market price</option><option value="cost">Purchase price</option></select>
  <label class="x-label" for="x-gold-karat">Default purity, for entries without one</label><select id="x-gold-karat" class="x-input"><option value="24">24k</option><option value="22">22k</option><option value="21">21k</option><option value="18">18k</option></select>
  <label class="x-label" for="x-gold-manual">Or type today's price per gram at the default purity, in USD (optional)</label><input id="x-gold-manual" class="x-input" inputmode="decimal" autocomplete="off" placeholder="Leave empty to use the live price">
  <div class="x-btns"><button type="button" id="x-gold-refresh">Refresh price</button></div></div></div>`);
 function goldStatus(extra){
   const g=gset();let t;
+  try{
+    const p=px24(),k=g.karat,d=new Date(g.at||Date.now());
+    $('x-gold-now').innerHTML=p>0
+      ?`<div class="x-gn-l">Gold today${num(g.manual)>0?' (your price)':' (live price, not an average)'}</div><div class="x-gn-v">${money2(p*k/24)} <span>per gram, ${k}k</span></div><div class="x-gn-s">24k ${money2(p)}/g${num(g.manual)>0?'':` · updated ${p2(d.getHours())}:${p2(d.getMinutes())}`}</div>`
+      :`<div class="x-gn-l">Gold today</div><div class="x-gn-s">${g.mode==='market'?'No live price yet. Tap Refresh price, or type one below.':'Gold is valued at what you paid.'}</div>`;
+  }catch(e){}
   if(g.mode!=='market')t='Using purchase prices';
   else if(num(g.manual)>0)t=`Your price ${money2(num(g.manual))}/g at ${g.karat}k`;
   else if(g.px>0){const d=new Date(g.at);t=`24k ${money2(g.px)}/g · ${p2(d.getHours())}:${p2(d.getMinutes())}`;}
@@ -499,9 +509,10 @@ async function refreshGold(){
   goldStatus(ok?'':'live price unavailable');
   if(!busy())renderAll();
 }
+const stg=document.createElement('style');stg.textContent='.x-goldnow{background:#F6F8FA;border-radius:12px;padding:12px 14px;margin:6px 0 4px}.x-gn-l{font-size:11px;font-weight:600;color:var(--muted)}.x-gn-v{font:700 24px "IBM Plex Sans",sans-serif;margin:2px 0}.x-gn-v span{font-size:13px;font-weight:500;color:var(--muted)}.x-gn-s{font-size:12px;color:var(--muted)}';document.head.appendChild(stg);
 const gm=gset();$('x-gold-mode').value=gm.mode;$('x-gold-karat').value=String(gm.karat);$('x-gold-manual').value=gm.manual;goldStatus();
 $('x-gold-mode').onchange=e=>{gsave({mode:e.target.value});goldStatus();renderAll();if(e.target.value==='market')refreshGold();};
-$('x-gold-karat').onchange=e=>{gsave({karat:+e.target.value});goldStatus();renderAll();};
+$('x-gold-karat').onchange=e=>{gsave({karat:+e.target.value,kset:true});goldStatus();renderAll();};
 $('x-gold-manual').onchange=e=>{gsave({manual:e.target.value.trim()});goldStatus();renderAll();if(!e.target.value.trim())refreshGold();};
 $('x-gold-refresh').onclick=async()=>{const ok=await fetchGold();goldStatus(ok?'':'live price unavailable');renderAll();toast(ok?'Gold price refreshed':'Could not reach the price service. Type a price instead.');};
 setInterval(()=>{if(!document.hidden)refreshGold();},15*60000);
@@ -524,20 +535,34 @@ async function fetchGoldHistory(force){
     hsave({at:Date.now(),m});return true;
   }catch(e){return false;}
 }
-function monthPx(k){const h=hget();return(h.m&&h.m[k])||(h.snap&&h.snap[k])||0;}
+function monthPx(k){const h=hget();return(h.man&&h.man[k])||(h.m&&h.m[k])||(h.snap&&h.snap[k])||0;}
 /* One row per month from the first gold purchase: 24k price, the value of the gold held, and the moves in %.
-   Price comes from market history, else from what you paid that month, else the last known price. */
+   A month's price is, in order: one you typed, the market average, today's live price (current month), what you paid that month.
+   Months with none of these are estimated by spreading the price evenly between the nearest known months, never held flat. */
 function goldMonthly(rows){
   const g=rows.filter(r=>!(r.name||'').includes('loan')&&(r.gold||0)>0&&r.yyyyMM);
   if(!g.length)return [];
   const paid={};g.forEach(r=>{if(r.goldPrice>0){const p=r.goldPrice*24/(kOf(r)||gset().karat);(paid[r.yyyyMM]=paid[r.yyyyMM]||[]).push(p);}});
   const first=g.map(r=>r.yyyyMM).sort()[0],nowK=toYMD(Date.now()).slice(0,7);
-  const lastRow=g.map(r=>r.yyyyMM).sort().pop(),end=nowK>lastRow?nowK:lastRow;
-  const out=[];let pxPrev=0,unitsPrev=0;
-  for(let i=0,n=monthsBetween(first,end);i<=n;i++){
-    const k=addMonths(first,i);let px=monthPx(k),src='market';
+  const lastRow=g.map(r=>r.yyyyMM).sort().pop(),end=nowK>lastRow?nowK:lastRow,n=monthsBetween(first,end);
+  const hh=hget(),base=[];
+  for(let i=0;i<=n;i++){
+    const k=addMonths(first,i);let px=monthPx(k),src=(hh.man&&hh.man[k])?'manual':'market';
+    if(k===nowK&&src!=='manual'){const lv=px24()||gset().px;if(lv>0){px=lv;src='live';}}
     if(!px&&paid[k]){px=paid[k].reduce((a,b)=>a+b,0)/paid[k].length;src='paid';}
-    if(!px){px=pxPrev;src='carried';}
+    base.push({k,px:px||0,src:px?src:'est'});
+  }
+  /* estimate the gaps */
+  for(let i=0;i<base.length;i++){
+    if(base[i].px)continue;
+    let lo=i-1;while(lo>=0&&!base[lo].px)lo--;
+    let hi=i+1;while(hi<base.length&&!base[hi].px)hi++;
+    if(lo>=0&&hi<base.length)base[i].px=base[lo].px+(base[hi].px-base[lo].px)*(i-lo)/(hi-lo);
+    else if(lo>=0)base[i].px=base[lo].px;
+    else if(hi<base.length)base[i].px=base[hi].px;
+  }
+  const out=[];let pxPrev=0,unitsPrev=0;
+  base.forEach(({k,px,src},i)=>{
     let units=0,cost=0,grams=0,newUnits=0;
     g.forEach(r=>{if(r.yyyyMM<=k){const u=r.gold*rowKarat(r)/24;units+=u;grams+=r.gold;cost+=r.gold*(r.goldPrice||0);if(r.yyyyMM===k)newUnits+=u;}});
     const value=px?units*px:null;
@@ -547,10 +572,10 @@ function goldMonthly(rows){
       priceEffect:(px&&pxPrev&&i>0)?unitsPrev*(px-pxPrev):(i===0&&px?0:null),
       bought:px?newUnits*px:null});
     if(px){pxPrev=px;}unitsPrev=units;
-  }
+  });
   return out;
 }
-window.lgGoldMonthly=goldMonthly;
+window.lgGoldMonthly=goldMonthly;window.lgGset=gset;
 document.getElementById('variance-section').insertAdjacentHTML('beforebegin',`<div class="section" id="x-goldhist">
  <div class="section-header"><h2>Gold, month by month</h2><span class="hint">24k, USD per gram</span></div>
  <div class="chart-card"><div class="title">Price and what your gold is worth</div>
@@ -563,7 +588,7 @@ function renderGoldChart(){
   const sec=$('x-goldhist'),all=goldMonthly(allData).filter(r=>r.px);
   sec.hidden=false;
   if(!all.length){$('x-goldhist-desc').textContent='Add a gold entry to see its month by month history here.';$('x-gold-table').querySelector('tbody').innerHTML='';if(charts.goldhist){charts.goldhist.destroy();charts.goldhist=null;}$('x-goldhist-note').textContent='';return;}
-  const lab=r=>`${fmtMonthShort(r.k)} ’${r.k.slice(2,4)}${r.src==='market'?'':'*'}`;
+  const lab=r=>`${fmtMonthShort(r.k)} ’${r.k.slice(2,4)}${r.src==='live'?' · today':((r.src==='market'||r.src==='manual')?'':'*')}`;
   if(charts.goldhist)charts.goldhist.destroy();
   charts.goldhist=new Chart($('goldhist'),{type:'line',
     data:{labels:all.map(lab),datasets:[
@@ -579,19 +604,30 @@ function renderGoldChart(){
   const last=all[all.length-1],pct=v=>v==null?null:`${v>=0?'up':'down'} ${Math.abs(v*100).toFixed(1)}%`;
   const bits=[['last month',last.mom],['the same month last year',last.yoy],['the end of last year',last.ytd]].filter(x=>x[1]!=null).map(x=>`${pct(x[1])} on ${x[0]}`);
   $('x-goldhist-desc').textContent=`Gold is ${bits.length?bits.join(', '):'at '+money2(last.px)+' per gram'}. Your holding is worth ${money0(last.value)} against ${money0(last.cost)} paid.`;
-  $('x-gold-table').querySelector('tbody').innerHTML=[...all].reverse().map(r=>`<tr><td data-v="${r.k.replace('-','')}"><strong>${lab(r)}</strong></td>
+  $('x-gold-table').querySelector('tbody').innerHTML=[...all].reverse().map(r=>`<tr data-k="${r.k}" class="x-row"><td data-v="${r.k.replace('-','')}"><strong>${lab(r)}</strong></td>
     <td class="num" data-v="${r.px}">${money2(r.px)}</td>${pcell(r.mom)}${pcell(r.yoy)}${pcell(r.ytd)}
     <td class="num" data-v="${r.value}">${money0(r.value)}</td>
     <td class="num ${r.priceEffect==null?'':(r.priceEffect>=0?'pos':'neg')}" data-v="${r.priceEffect==null?'':r.priceEffect}">${r.priceEffect==null?'—':signed0(r.priceEffect)}</td>
     <td class="num" data-v="${r.bought||0}">${r.bought?signed0(r.bought):'—'}</td></tr>`).join('');
-  const h=hget(),nm=h.m?Object.keys(h.m).length:0,est=all.some(r=>r.src!=='market');
-  $('x-goldhist-note').textContent=(nm?`Market prices are monthly averages from freegoldapi.com (${nm} months loaded). `:'Market price history could not be loaded, so months use what you paid for gold that month, or the last known price. ')
-    +(est?'A * means the month has no market price: it uses your purchase price or the last known price. ':'')
+  const h=hget(),nm=h.m?Object.keys(h.m).length:0,est=all.some(r=>r.src==='paid'||r.src==='est');
+  $('x-goldhist-note').textContent=(nm?`Past months use the monthly average price from freegoldapi.com (${nm} months loaded). The current month uses today's price. `:'Market price history could not be loaded, so months use what you paid for gold that month, or an estimate between the nearest known months. ')
+    +(est?'A * means that month has no market price: it uses what you paid, or an estimate spread between the nearest known months. Tap a month to type its real price per gram (24k). ':'')
     +'Price effect is what the gold you already held gained or lost. Bought is the value of gold added that month.';
 }
+$('x-gold-table').addEventListener('click',e=>{
+  const tr=e.target.closest('tbody tr');if(!tr||!tr.dataset.k)return;
+  const cur=(hget().man||{})[tr.dataset.k];
+  const v=prompt(`24k gold price per gram in USD for ${fmtMonthFull(tr.dataset.k)}.\nLeave empty to remove your price.`,cur?String(Math.round(cur*100)/100):'');
+  if(v===null)return;
+  const man=Object.assign({},hget().man||{}),n=num(v);
+  if(n>20&&n<1000)man[tr.dataset.k]=n;else if(String(v).trim()==='')delete man[tr.dataset.k];else{toast('That price does not look right. Use USD per gram of 24k gold.');return;}
+  hsave({man});renderAll();
+});
 $('x-gh-retry').onclick=()=>{fetchGoldHistory(true).then(ok=>{toast(ok?'Price history loaded':'Could not load price history. Try again later.',false);renderAll();});};
 const prevRA=renderAll;
 renderAll=function(){prevRA();try{renderGoldChart();}catch(e){}};
+setInterval(()=>{if(!document.hidden)refreshGold();},10*60*1000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-(gset().at||0)>5*60*1000)refreshGold();});
 setInterval(()=>{if(!document.hidden)fetchGoldHistory().then(ok=>{if(ok&&!busy())renderAll();});},3600*1000);
 
 /* ---------- views, sortable tables, contribution tables, gold lots ---------- */
@@ -967,7 +1003,7 @@ try{tomb=JSON.parse(localStorage.getItem(TOMB)||'{}')||{};}catch(e){tomb={};}
 try{if(!allData.length&&!localStorage.getItem('lg-ledger-seeded')){allData=seedRows();localStorage.setItem('lg-ledger-seeded','1');}}catch(e){}
 allData.forEach(r=>{if(!r.updated)r.updated=1;lastSig[r.id]=sig(r);});
 persist();
-const c0=cfg();if(c0){$('x-sync-url').value=c0.url;$('x-sync-token').value=c0.token;}
+const c0=cfg();if(c0){$('x-sync-url').value=toLogin(c0.url);$('x-sync-token').value=c0.token;}
 status();renderAll();
 if(c0)sync({quiet:true});
 refreshGold();
