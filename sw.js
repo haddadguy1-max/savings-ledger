@@ -1,4 +1,4 @@
-const V='lg-ledger-v1';
+const V='lg-ledger-v3';
 const CORE=['./','index.html','app-extras.js','manifest.json','icon-180.png','icon-192.png','icon-512.png'];
 const CDN=[
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
@@ -18,6 +18,8 @@ self.addEventListener('activate',e=>{
 /* Serve from cache instantly, refresh the cache in the background. */
 self.addEventListener('fetch',e=>{
   const r=e.request;if(r.method!=='GET')return;
+  const u=new URL(r.url);
+  if(!(u.origin===location.origin||/(^|\.)(jsdelivr\.net|googleapis\.com|gstatic\.com)$/.test(u.hostname)))return;   // never cache Sheets traffic
   e.respondWith(caches.match(r).then(hit=>{
     const net=fetch(r).then(res=>{
       if(res&&(res.ok||res.type==='opaque')){const cp=res.clone();caches.open(V).then(c=>c.put(r,cp));}

@@ -1,7 +1,8 @@
 /* Savings Ledger: in-app entry, on-device storage, backup, and PWA wiring.
    Loaded after the main page script, so it can use its data and render functions. */
 (function(){
-const KEY='lg-ledger-v1', PREF='lg-ledger-prefs-v1';
+const KEY='lg-ledger-v1', PREF='lg-ledger-prefs-v1', TOMB='lg-ledger-tomb-v1', SYNC='lg-sync-v1';
+let lastSig={},tomb={},ver=0,syncing=false,syncAgain=false,syncTimer=null,syncState='';
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=v=>{const n=parseFloat(String(v).replace(/\s/g,'').replace(',','.'));return isNaN(n)?0:n;};
@@ -109,10 +110,19 @@ if(thr){const th=document.createElement('th');th.className='r';th.setAttribute('
 /* ---------- storage ---------- */
 let undoSnap=null,toastTimer=null;
 const snapshot=()=>{undoSnap=JSON.stringify(allData);};
-function save(){try{localStorage.setItem(KEY,JSON.stringify(allData));}catch(e){toast('Could not save on this device. Export a backup.');}}
+const SIGF=['date','type','gold','eur','usd','name','goldPrice'];
+const sig=r=>JSON.stringify(SIGF.map(f=>r[f]));
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(allData));localStorage.setItem(TOMB,JSON.stringify(tomb));}catch(e){toast('Could not save on this device. Export a backup.');}}
+/* Every local change goes through save(): it stamps changed rows, remembers deletions, then schedules a sync. */
+function save(){
+  const now=Date.now(),seen={};ver++;
+  allData.forEach(r=>{seen[r.id]=1;const s=sig(r);if(lastSig[r.id]!==s){r.updated=now;lastSig[r.id]=s;delete tomb[r.id];}});
+  Object.keys(lastSig).forEach(id=>{if(!seen[id]){tomb[id]=now;delete lastSig[id];}});
+  persist();scheduleSync();
+}
 function loadSaved(){try{const r=JSON.parse(localStorage.getItem(KEY)||'[]');return Array.isArray(r)?r:[];}catch(e){return [];}}
 function status(){
-  $('file-info').textContent=allData.length?`${allData.length} entries · saved on this device`:'No entries yet';
+  $('file-info').textContent=(allData.length?`${allData.length} entries`:'No entries yet')+(cfg()?` · ${syncState||'Sheets sync on'}`:' · saved on this device');
   const b=readPrefs().lastBackup;$('x-data-hint').textContent=b?`Last backup ${b}`:'No backup yet';
 }
 function setData(rows){allData=rows;save();status();renderAll();}
@@ -125,7 +135,7 @@ function toast(msg,undo){
 /* ---------- render overrides ---------- */
 const baseRenderAll=renderAll;
 renderAll=function(){
-  const sec=['hero','kpi-grid','filter-section','charts-section','bridge-section','insights-section','variance-section'];
+  const sec=['hero','kpi-grid','filter-section','charts-section','bridge-section','insights-section','trends-section','variance-section'];
   if(!allData.length){sec.forEach(id=>$(id).hidden=true);$('tx-search').hidden=true;$('x-empty').hidden=false;renderTable([]);return;}
   $('x-empty').hidden=true;
   const filtered=getFilteredData();
@@ -311,17 +321,112 @@ $('x-raw-add').onclick=()=>{
 };
 
 /* ---------- built-in starting data ---------- */
-function seedRows(){const el=$('seed-csv');if(!el)return [];const r=parseCSV(el.textContent);r.forEach(x=>{x.id=uid();});return r;}
+function seedRows(){const el=$('seed-csv');if(!el)return [];const r=parseCSV(el.textContent);r.forEach((x,i)=>{x.id='s'+i;x.updated=1;});return r;}
 $('x-reset').onclick=()=>{
   const s=seedRows();if(!s.length)return;
   if(confirm(`Replace everything on this device with the original ${s.length} rows?`)){snapshot();setData(s);toast('Original data restored',true);}
 };
 if($('add-btn'))$('add-btn').onclick=()=>openSheet(null);
 
+
+/* ---------- Google Sheets sync ---------- */
+$('x-data').insertAdjacentHTML('beforebegin',`<div class="section" id="x-sync"><div class="section-header"><h2>Google Sheets sync</h2><span class="hint" id="x-sync-status"></span></div>
+ <div class="kpi-card"><div class="kpi-sub" style="font-size:13px;margin:0 0 4px">Every entry is copied to your Google Sheet automatically, and changes made by Lea, on another phone or in the Sheet itself flow back here. Treat the web app link and secret token like a password.</div>
+ <label class="x-label" for="x-sync-url">Web app link</label><input id="x-sync-url" class="x-input" autocomplete="off" autocapitalize="off" placeholder="https://script.google.com/macros/s/…/exec">
+ <label class="x-label" for="x-sync-token">Secret token</label><input id="x-sync-token" type="password" class="x-input" autocomplete="off" autocapitalize="off">
+ <div class="x-btns"><button type="button" id="x-sync-connect">Connect</button><button type="button" id="x-sync-invite">Copy invite link</button><button type="button" id="x-sync-now">Sync now</button><button type="button" id="x-sync-off" class="danger">Disconnect</button></div></div></div>`);
+const cfg=()=>{try{return JSON.parse(localStorage.getItem(SYNC)||'null');}catch(e){return null;}};
+const isTrue=v=>v===true||v===1||String(v).toLowerCase()==='true';
+function setSyncState(t){syncState=t;const el=$('x-sync-status');if(el)el.textContent=t;status();}
+function scheduleSync(){if(!cfg())return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>sync({quiet:true}),1500);}
+function busy(){const a=document.activeElement;return !$('x-sheet').hidden||!!(a&&a.classList&&a.classList.contains('x-cell'));}
+function errText(e){return e.message==='unauthorized'?'Wrong secret token.':e.message==='bad-reply'?'The Sheet did not answer. Check the web app link and that access is set to Anyone.':'Offline. Changes are saved here and will sync later.';}
+async function api(method,body){
+  const c=cfg();let r,j;
+  try{
+    r=await fetch(method==='GET'?`${c.url}${c.url.includes('?')?'&':'?'}token=${encodeURIComponent(c.token)}`:c.url,
+      method==='GET'?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(Object.assign({token:c.token},body))});
+  }catch(e){throw new Error('offline');}
+  try{j=await r.json();}catch(e){throw new Error('bad-reply');}
+  if(j.error)throw new Error(j.error==='unauthorized'?'unauthorized':'bad-reply');
+  return j;
+}
+const toRemote=r=>({id:r.id,date:r.date,type:r.type,gold:r.gold||0,eur:r.eur||0,usd:r.usd||0,name:r.name||'',goldPrice:r.goldPrice||0,updated:r.updated||1,deleted:false});
+function fromRemote(x){const date=String(x.date||'').trim();
+  return {id:String(x.id),date,sortTs:parseSortDate(date),yyyyMM:parseDateToYYYYMM(date),type:x.type||'Cash USD',gold:num(x.gold),eur:num(x.eur),usd:num(x.usd),name:String(x.name||'').toLowerCase(),goldPrice:num(x.goldPrice),updated:+x.updated||1};}
+async function sync(o){
+  o=o||{};
+  if(!cfg())return;
+  if(syncing){syncAgain=true;return;}
+  if(!o.manual&&busy()){scheduleSync();return;}
+  syncing=true;const v0=ver;
+  if(!o.quiet)setSyncState('Syncing…');
+  try{
+    const remote=(await api('GET')).rows||[],rmap={};
+    remote.forEach(x=>{rmap[String(x.id)]=x;});
+    const L=o.adopt?[]:allData,T=o.adopt?{}:tomb,lmap={};
+    L.forEach(r=>{lmap[r.id]=r;});
+    const ids=new Set([...L.map(r=>r.id),...Object.keys(T),...Object.keys(rmap)]);
+    const rows=[],nt={},push=[];
+    ids.forEach(id=>{
+      const l=lmap[id],lt=T[id],x=rmap[id],lu=l?(l.updated||1):(lt||0),ru=x?(+x.updated||0):-1;
+      if(x&&ru>=lu){if(isTrue(x.deleted))nt[id]=ru;else rows.push(fromRemote(x));}
+      else if(l){rows.push(l);push.push(toRemote(l));}
+      else if(lt){nt[id]=lt;if(x)push.push({id,deleted:true,updated:lt});}
+    });
+    if(push.length)await api('POST',{rows:push});
+    if(ver!==v0)syncAgain=true;
+    else{
+      const sg=a=>JSON.stringify(a.map(r=>r.id+'|'+r.updated+'|'+sig(r)).sort());
+      const changed=sg(rows)!==sg(allData);
+      allData=rows;tomb=nt;lastSig={};allData.forEach(r=>{lastSig[r.id]=sig(r);});persist();
+      if(changed)renderAll();
+    }
+    const n=new Date();setSyncState(`Synced ${p2(n.getHours())}:${p2(n.getMinutes())}`);
+  }catch(e){setSyncState(errText(e));if(o.manual)toast(errText(e));}
+  finally{syncing=false;if(syncAgain){syncAgain=false;scheduleSync();}}
+}
+$('x-sync-connect').onclick=async()=>{
+  const url=$('x-sync-url').value.trim(),token=$('x-sync-token').value.trim();
+  if(!/^https:\/\/script\.google\.com\/\S+/.test(url)||!token){toast('Paste the web app link and your secret token.');return;}
+  localStorage.setItem(SYNC,JSON.stringify({url,token}));setSyncState('Connecting…');
+  let adopt=false;
+  try{
+    const remote=((await api('GET')).rows||[]).filter(x=>!isTrue(x.deleted));
+    if(remote.length&&allData.length)adopt=confirm(`The Sheet already has ${remote.length} rows and this device has ${allData.length}.\n\nOK: use the Sheet's data and replace this device's.\nCancel: merge both (can create duplicates).`);
+  }catch(e){localStorage.removeItem(SYNC);setSyncState('');status();toast(errText(e));return;}
+  await sync({manual:true,adopt});
+};
+$('x-sync-invite').onclick=async()=>{
+  const c=cfg();if(!c){toast('Connect to your Sheet first.');return;}
+  const link=location.origin+location.pathname+'#join='+btoa(unescape(encodeURIComponent(JSON.stringify({u:c.url,t:c.token}))));
+  try{await navigator.clipboard.writeText(link);toast('Invite link copied. Send it privately: anyone with it can edit the ledger.');}
+  catch(e){prompt('Copy this invite link and send it privately:',link);}
+};
+$('x-sync-now').onclick=()=>{if(!cfg()){toast('Connect to your Sheet first.');return;}sync({manual:true});};
+$('x-sync-off').onclick=()=>{localStorage.removeItem(SYNC);$('x-sync-token').value='';setSyncState('');status();toast('Disconnected. Your data stays on this device.');};
+setInterval(()=>{if(cfg()&&!document.hidden)sync({quiet:true});},45000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cfg())sync({quiet:true});});
+window.addEventListener('online',()=>{if(cfg())sync({quiet:true});});
+
 /* ---------- start ---------- */
-allData=loadSaved();
 try{
-  if(!allData.length&&!localStorage.getItem('lg-ledger-seeded')){allData=seedRows();localStorage.setItem('lg-ledger-seeded','1');save();}
+  const m=location.hash.match(/^#join=(.+)$/);
+  if(m){
+    const o=JSON.parse(decodeURIComponent(escape(atob(m[1]))));
+    if(/^https:\/\/script\.google\.com\//.test(o.u)&&o.t){
+      localStorage.setItem(SYNC,JSON.stringify({url:o.u,token:o.t}));
+      localStorage.setItem('lg-ledger-seeded','1');   // joiners get the shared Sheet's data, never a built-in copy
+    }
+    history.replaceState(null,'',location.pathname+location.search);
+  }
 }catch(e){}
+allData=loadSaved();
+try{tomb=JSON.parse(localStorage.getItem(TOMB)||'{}')||{};}catch(e){tomb={};}
+try{if(!allData.length&&!localStorage.getItem('lg-ledger-seeded')){allData=seedRows();localStorage.setItem('lg-ledger-seeded','1');}}catch(e){}
+allData.forEach(r=>{if(!r.updated)r.updated=1;lastSig[r.id]=sig(r);});
+persist();
+const c0=cfg();if(c0){$('x-sync-url').value=c0.url;$('x-sync-token').value=c0.token;}
 status();renderAll();
+if(c0)sync({quiet:true});
 })();
