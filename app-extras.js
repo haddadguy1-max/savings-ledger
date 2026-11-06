@@ -525,19 +525,25 @@ async function fetchGoldHistory(force){
   }catch(e){return false;}
 }
 function monthPx(k){const h=hget();return(h.m&&h.m[k])||(h.snap&&h.snap[k])||0;}
-/* One row per month from the first gold purchase: price, value of the gold held, and the split of its change. */
+/* One row per month from the first gold purchase: 24k price, the value of the gold held, and the moves in %.
+   Price comes from market history, else from what you paid that month, else the last known price. */
 function goldMonthly(rows){
   const g=rows.filter(r=>!(r.name||'').includes('loan')&&(r.gold||0)>0&&r.yyyyMM);
   if(!g.length)return [];
+  const paid={};g.forEach(r=>{if(r.goldPrice>0){const p=r.goldPrice*24/(kOf(r)||gset().karat);(paid[r.yyyyMM]=paid[r.yyyyMM]||[]).push(p);}});
   const first=g.map(r=>r.yyyyMM).sort()[0],nowK=toYMD(Date.now()).slice(0,7);
   const lastRow=g.map(r=>r.yyyyMM).sort().pop(),end=nowK>lastRow?nowK:lastRow;
   const out=[];let pxPrev=0,unitsPrev=0;
   for(let i=0,n=monthsBetween(first,end);i<=n;i++){
-    const k=addMonths(first,i);let px=monthPx(k);if(!px)px=pxPrev;
+    const k=addMonths(first,i);let px=monthPx(k),src='market';
+    if(!px&&paid[k]){px=paid[k].reduce((a,b)=>a+b,0)/paid[k].length;src='paid';}
+    if(!px){px=pxPrev;src='carried';}
     let units=0,cost=0,grams=0,newUnits=0;
     g.forEach(r=>{if(r.yyyyMM<=k){const u=r.gold*rowKarat(r)/24;units+=u;grams+=r.gold;cost+=r.gold*(r.goldPrice||0);if(r.yyyyMM===k)newUnits+=u;}});
     const value=px?units*px:null;
-    out.push({k,px:px||null,grams,cost,units,value,
+    const ly=monthPx(addMonths(k,-12)),dec=monthPx(`${+k.slice(0,4)-1}-12`);
+    out.push({k,px:px||null,src,grams,cost,units,value,
+      mom:(px&&pxPrev)?px/pxPrev-1:null,yoy:(px&&ly)?px/ly-1:null,ytd:(px&&dec)?px/dec-1:null,
       priceEffect:(px&&pxPrev&&i>0)?unitsPrev*(px-pxPrev):(i===0&&px?0:null),
       bought:px?newUnits*px:null});
     if(px){pxPrev=px;}unitsPrev=units;
@@ -545,17 +551,19 @@ function goldMonthly(rows){
   return out;
 }
 window.lgGoldMonthly=goldMonthly;
-document.getElementById('variance-section').insertAdjacentHTML('beforebegin',`<div class="section" id="x-goldhist" hidden>
- <div class="section-header"><h2>Gold price</h2><span class="hint">monthly average, 24k, per gram</span></div>
+document.getElementById('variance-section').insertAdjacentHTML('beforebegin',`<div class="section" id="x-goldhist">
+ <div class="section-header"><h2>Gold, month by month</h2><span class="hint">24k, USD per gram</span></div>
  <div class="chart-card"><div class="title">Price and what your gold is worth</div>
   <div class="desc" id="x-goldhist-desc"></div><div class="chart-wrap tall"><canvas id="goldhist"></canvas></div></div>
- <div class="table-container" style="margin-top:10px"><table id="x-gold-table" style="min-width:520px"><thead><tr><th>Month</th><th class="r">Price / g</th><th class="r">Price effect</th><th class="r">Bought</th><th class="r">Gold value</th></tr></thead><tbody></tbody></table></div>
- <p class="x-note" id="x-goldhist-note"></p></div>`);
+ <div class="table-container" style="margin-top:10px"><table id="x-gold-table" style="min-width:680px"><thead><tr><th>Month</th><th class="r">Price / g</th><th class="r">vs last month</th><th class="r">vs last year</th><th class="r">Year to date</th><th class="r">Your gold</th><th class="r">Price effect</th><th class="r">Bought</th></tr></thead><tbody></tbody></table></div>
+ <p class="x-note" id="x-goldhist-note"></p>
+ <div class="x-btns"><button type="button" id="x-gh-retry">Reload price history</button></div></div>`);
+const pcell=v=>v==null?'<td class="num" data-v="">—</td>':`<td class="num ${v>=0?'pos':'neg'}" data-v="${v}">${v>=0?'▲':'▼'} ${Math.abs(v*100).toFixed(1)}%</td>`;
 function renderGoldChart(){
-  const sec=$('x-goldhist'),rows=goldMonthly(allData).filter(r=>r.px);
-  if(!rows.length){sec.hidden=true;return;}
+  const sec=$('x-goldhist'),all=goldMonthly(allData).filter(r=>r.px);
   sec.hidden=false;
-  const all=goldMonthly(allData).filter(r=>r.px),lab=r=>`${fmtMonthShort(r.k)} ’${r.k.slice(2,4)}`;
+  if(!all.length){$('x-goldhist-desc').textContent='Add a gold entry to see its month by month history here.';$('x-gold-table').querySelector('tbody').innerHTML='';if(charts.goldhist){charts.goldhist.destroy();charts.goldhist=null;}$('x-goldhist-note').textContent='';return;}
+  const lab=r=>`${fmtMonthShort(r.k)} ’${r.k.slice(2,4)}${r.src==='market'?'':'*'}`;
   if(charts.goldhist)charts.goldhist.destroy();
   charts.goldhist=new Chart($('goldhist'),{type:'line',
     data:{labels:all.map(lab),datasets:[
@@ -568,18 +576,20 @@ function renderGoldChart(){
       plugins:{legend:{position:'bottom',labels:{boxWidth:14,boxHeight:2,padding:12,font:{size:11}}},
         tooltip:{callbacks:{title:items=>fmtMonthFull(all[items[0].dataIndex].k),
           label:c=>` ${c.dataset.label}: ${c.raw==null?'—':(c.datasetIndex===0?money2(c.raw):money0(c.raw))}`}}}}});
-  const last=all[all.length-1],prev=all[all.length-2];
-  $('x-goldhist-desc').textContent=prev?`Gold ${last.px>=prev.px?'rose':'fell'} ${(Math.abs(last.px/prev.px-1)*100).toFixed(1)}% last month, and your holding is worth ${money0(last.value)} against ${money0(last.cost)} paid.`
-    :`Your holding is worth ${money0(last.value)} against ${money0(last.cost)} paid.`;
-  $('x-gold-table').querySelector('tbody').innerHTML=[...all].reverse().map(r=>`<tr><td><strong>${lab(r)}</strong></td>
-    <td class="num">${money2(r.px)}</td>
-    <td class="num ${r.priceEffect==null?'':(r.priceEffect>=0?'pos':'neg')}">${r.priceEffect==null?'—':signed0(r.priceEffect)}</td>
-    <td class="num">${r.bought?signed0(r.bought):'—'}</td><td class="num">${money0(r.value)}</td></tr>`).join('');
-  const h=hget();
-  $('x-goldhist-note').textContent=h.m&&Object.keys(h.m).length
-    ?'Prices are monthly averages from freegoldapi.com, and the current month uses today’s price. Price effect is how much the gold you already held gained or lost. Bought is the value of gold added that month. A month with no price data repeats the last known price.'
-    :'Price history could not be loaded, so this only uses prices the app has seen since it started. Price effect is how much the gold you already held gained or lost.';
+  const last=all[all.length-1],pct=v=>v==null?null:`${v>=0?'up':'down'} ${Math.abs(v*100).toFixed(1)}%`;
+  const bits=[['last month',last.mom],['the same month last year',last.yoy],['the end of last year',last.ytd]].filter(x=>x[1]!=null).map(x=>`${pct(x[1])} on ${x[0]}`);
+  $('x-goldhist-desc').textContent=`Gold is ${bits.length?bits.join(', '):'at '+money2(last.px)+' per gram'}. Your holding is worth ${money0(last.value)} against ${money0(last.cost)} paid.`;
+  $('x-gold-table').querySelector('tbody').innerHTML=[...all].reverse().map(r=>`<tr><td data-v="${r.k.replace('-','')}"><strong>${lab(r)}</strong></td>
+    <td class="num" data-v="${r.px}">${money2(r.px)}</td>${pcell(r.mom)}${pcell(r.yoy)}${pcell(r.ytd)}
+    <td class="num" data-v="${r.value}">${money0(r.value)}</td>
+    <td class="num ${r.priceEffect==null?'':(r.priceEffect>=0?'pos':'neg')}" data-v="${r.priceEffect==null?'':r.priceEffect}">${r.priceEffect==null?'—':signed0(r.priceEffect)}</td>
+    <td class="num" data-v="${r.bought||0}">${r.bought?signed0(r.bought):'—'}</td></tr>`).join('');
+  const h=hget(),nm=h.m?Object.keys(h.m).length:0,est=all.some(r=>r.src!=='market');
+  $('x-goldhist-note').textContent=(nm?`Market prices are monthly averages from freegoldapi.com (${nm} months loaded). `:'Market price history could not be loaded, so months use what you paid for gold that month, or the last known price. ')
+    +(est?'A * means the month has no market price: it uses your purchase price or the last known price. ':'')
+    +'Price effect is what the gold you already held gained or lost. Bought is the value of gold added that month.';
 }
+$('x-gh-retry').onclick=()=>{fetchGoldHistory(true).then(ok=>{toast(ok?'Price history loaded':'Could not load price history. Try again later.',false);renderAll();});};
 const prevRA=renderAll;
 renderAll=function(){prevRA();try{renderGoldChart();}catch(e){}};
 setInterval(()=>{if(!document.hidden)fetchGoldHistory().then(ok=>{if(ok&&!busy())renderAll();});},3600*1000);
@@ -613,8 +623,8 @@ document.head.appendChild(st);
 /* tabs */
 const VIEWS=[['overview','Overview'],['tables','Tables'],['gold','Gold'],['ledger','Ledger'],['data','Data']];
 const VMAP={
-  overview:['kpi-grid','filter-section','charts-section','insights-section'],
-  tables:['filter-section','bridge-section','x-ctc','trends-section','variance-section'],
+  overview:['kpi-grid','filter-section','x-score','charts-section','insights-section'],
+  tables:['filter-section','x-score','bridge-section','x-ctc','trends-section','variance-section'],
   gold:['x-gold','x-goldhist','x-lots'],
   ledger:['filter-section','tx-section'],
   data:['x-raw','x-sync','x-data']
@@ -625,6 +635,10 @@ try{const v=localStorage.getItem('lg-view-v1');if(VMAP[v])view=v;}catch(e){}
 $('hero').insertAdjacentHTML('afterend',`<div class="x-tabs" id="x-tabs" role="tablist">${VIEWS.map(([k,l])=>`<button type="button" data-view="${k}" role="tab">${l}</button>`).join('')}</div>`);
 function applyView(){
   $('x-tabs').hidden=$('hero').hidden;
+  if($('hero').hidden){   /* nothing in the ledger yet: show the Google link and import tools, never hide them behind a tab */
+    ALLV.forEach(id=>{const el=$(id);if(el)el.classList.toggle('x-off',!['x-sync','x-data','x-raw','x-gold'].includes(id));});
+    const tx=$('tx-search');if(tx)tx.classList.remove('x-off');return;
+  }
   $('x-tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
   ALLV.forEach(id=>{const el=$(id);if(el)el.classList.toggle('x-off',!VMAP[view].includes(id));});
   const tx=$('tx-search');if(tx)tx.classList.toggle('x-off',view!=='ledger');
@@ -666,7 +680,7 @@ function keyOf(td){
   return (!isNaN(n)&&/^-?\d/.test(t))?n:s.toLowerCase();
 }
 function applySort(id){
-  const tb=$(id);if(!tb||!tb.tHead||!tb.tHead.rows[0])return;
+  const tb=$(id);if(!tb||!tb.tHead||!tb.tHead.rows||!tb.tHead.rows[0])return;
   const ths=[...tb.tHead.rows[0].cells];
   const sig=ths.map(h=>h.textContent).join('|');
   if(ST[id]&&ST[id].sig!==sig)delete ST[id];
@@ -826,13 +840,108 @@ $('x-lots').addEventListener('click',e=>{
   const row=allData.find(r=>r.id===tr.dataset.id);if(row)openSheet(row);
 });
 
+/* scorecard: this period against last period and the same period last year, then year to date */
+$('filter-section').insertAdjacentHTML('afterend',`<div class="section" id="x-score">
+ <div class="section-header"><h2>Scorecard</h2><div class="toggle-group" id="x-sc-mode"><button type="button" data-m="month" class="active">Month</button><button type="button" data-m="week">Week</button></div></div>
+ <div class="x-sc-pick"><button type="button" class="x-link" id="x-sc-prev" aria-label="Earlier">‹</button><select class="month-select" id="x-sc-sel" aria-label="Period"></select><button type="button" class="x-link" id="x-sc-next" aria-label="Later">›</button></div>
+ <div class="table-container"><table id="x-sc-table" style="min-width:540px"><thead></thead><tbody></tbody></table></div>
+ <h3 class="x-h3" id="x-ytd-title">Year to date</h3>
+ <div class="table-container"><table id="x-ytd-table" style="min-width:540px"><thead></thead><tbody></tbody></table></div>
+ <p class="x-note" id="x-sc-note"></p></div>`);
+const st2=document.createElement('style');
+st2.textContent=`.x-sc-pick{display:flex;align-items:center;gap:6px;margin:0 0 10px}.x-sc-pick .month-select{flex:1;min-width:0}.x-sc-pick .x-link{font-size:22px;padding:2px 12px}
+#x-sc-table td.num small,#x-ytd-table td.num small{display:block;font-size:11px;font-weight:600;margin-top:1px}#x-sc-table td.cur,#x-ytd-table td.cur{font-weight:700}`;
+document.head.appendChild(st2);
+const SC={mode:'month',sel:''};window.lgSC=SC;
+const DAY=864e5,MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const fm=(y,m)=>`${MON[m]} ${y}`;
+const fd=ts=>{const d=new Date(ts);return `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`;};
+function wkStart(ts){const d=new Date(ts);d.setHours(0,0,0,0);d.setDate(d.getDate()-((d.getDay()+6)%7));return d.getTime();}
+function shiftD(ts,n){const d=new Date(ts);d.setDate(d.getDate()+n);return d.getTime();}
+function scOptions(rows){
+  const ts=rows.map(r=>r.sortTs).filter(Boolean);if(!ts.length)return [];
+  const first=Math.min(...ts),now=Date.now(),last=Math.max(Math.max(...ts),now),out=[];
+  if(SC.mode==='month'){
+    const a=new Date(first),b=new Date(last);
+    for(let y=b.getFullYear(),m=b.getMonth();y>a.getFullYear()||(y===a.getFullYear()&&m>=a.getMonth());){out.push({v:`${y}-${p2(m+1)}`,l:fm(y,m)});if(--m<0){m=11;y--;}}
+  }else{
+    for(let w=wkStart(last),i=0;w>=wkStart(first)&&i<80;w=shiftD(w,-7),i++)out.push({v:String(w),l:`Week of ${fd(w)}`});
+  }
+  return out;
+}
+function rangeOf(sel,kind){   /* kind: cur, prev, ly */
+  if(SC.mode==='month'){
+    let [y,m]=sel.split('-').map(Number);m--;
+    if(kind==='prev'){m--;if(m<0){m=11;y--;}}
+    if(kind==='ly')y--;
+    return {a:new Date(y,m,1).getTime(),b:new Date(y,m+1,1).getTime(),l:fm(y,m),y,m};
+  }
+  let a=+sel;if(kind==='prev')a=shiftD(a,-7);if(kind==='ly')a=shiftD(a,-364);
+  return {a,b:shiftD(a,7),l:fd(a)};
+}
+let JF=1;
+function bucket(rows,a,b){
+  const o={saved:0,guy:0,lea:0,gold:0,n:0,touchesJan:false};
+  rows.forEach(d=>{
+    if(!(d.sortTs>=a&&d.sortTs<b))return;
+    const jan=d.yyyyMM==='2026-01',f=jan?JF:1;if(jan)o.touchesJan=true;
+    const u=d.usd||0,gv=(d.gold||0)*(d.goldPrice||0),nm=d.name||'';
+    if(isLoanRow(d)){o.saved+=u*f;return;}
+    const tot=u+gv;o.saved+=tot*f;o.gold+=gv*f;o.n++;
+    if(nm.includes('guy'))o.guy+=tot*f;else if(nm.includes('lea'))o.lea+=tot*f;
+  });
+  return o;
+}
+const balanceTo=(rows,b)=>rows.reduce((s,d)=>d.sortTs<b?s+(isLoanRow(d)?(d.usd||0):(d.usd||0)+(d.gold||0)*(d.goldPrice||0)):s,0);
+const pcOf=(a,b)=>(b!=null&&b>0)?a/b-1:null;
+const arrow=v=>v==null?'—':`<span class="${v>=0?'pos':'neg'}">${v>=0?'▲':'▼'} ${Math.abs(v*100).toFixed(1)}%</span>`;
+const dcell=(a,b,ok)=>{if(!ok)return '<td class="num">n/a</td>';const v=pcOf(a,b);return `<td class="num">${arrow(v)}<small class="${a-b>=0?'pos':'neg'}">${signed0(a-b)}</small></td>`;};
+function renderScore(){
+  const rows=getFilteredData();if(!allData.length||!rows.length)return;
+  const all=computeAnalytics(allData).comp['2026-01'];JF=(all&&all.delta)?jan26()/all.delta:1;
+  const opts=scOptions(rows);if(!opts.length)return;
+  if(!opts.some(o=>o.v===SC.sel))SC.sel=opts[0].v;
+  $('x-sc-sel').innerHTML=opts.map(o=>`<option value="${o.v}">${esc(o.l)}</option>`).join('');$('x-sc-sel').value=SC.sel;
+  $('x-sc-mode').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.m===SC.mode));
+  const cur=rangeOf(SC.sel,'cur'),prv=rangeOf(SC.sel,'prev'),ly=rangeOf(SC.sel,'ly');
+  const first=Math.min(...rows.map(r=>r.sortTs).filter(Boolean));
+  const hasPrev=prv.b>first,hasLy=ly.b>first;
+  const C0=bucket(rows,cur.a,cur.b),P0=bucket(rows,prv.a,prv.b),L0=bucket(rows,ly.a,ly.b);
+  const bal=[balanceTo(rows,cur.b),balanceTo(rows,prv.b),balanceTo(rows,ly.b)];
+  const unit=SC.mode==='month'?'month':'week',lab=SC.mode==='month'?'MoM':'WoW';
+  $('x-sc-table').tHead.innerHTML=`<tr><th>${SC.mode==='month'?'Month':'Week'}</th><th class="r">${esc(cur.l)}</th><th class="r">${esc(prv.l)}</th><th class="r">${lab}</th><th class="r">${esc(ly.l)}</th><th class="r">YoY</th></tr>`;
+  const M=[['Saved','saved'],['Guy added','guy'],['Lea added','lea'],['Gold bought','gold']];
+  let h=M.map(([l,k])=>`<tr><td><strong>${l}</strong></td><td class="num cur">${money0(C0[k])}</td><td class="num">${hasPrev?money0(P0[k]):'—'}</td>${dcell(C0[k],P0[k],hasPrev)}<td class="num">${hasLy?money0(L0[k]):'—'}</td>${dcell(C0[k],L0[k],hasLy)}</tr>`).join('');
+  h+=`<tr><td><strong>Balance at end</strong></td><td class="num cur">${money0(bal[0])}</td><td class="num">${hasPrev?money0(bal[1]):'—'}</td>${dcell(bal[0],bal[1],hasPrev)}<td class="num">${hasLy?money0(bal[2]):'—'}</td>${dcell(bal[0],bal[2],hasLy)}</tr>`;
+  $('x-sc-table').tBodies[0].innerHTML=h;
+  /* year to date, from 1 January to the end of the selected period */
+  const y=new Date(cur.b-1).getFullYear(),y0=new Date(y,0,1).getTime(),yl=new Date(y-1,0,1).getTime();
+  const lyEnd=SC.mode==='month'?new Date(y-1,new Date(cur.b-1).getMonth()+1,1).getTime():shiftD(cur.b,-364);
+  const Y0=bucket(rows,y0,cur.b),YL=bucket(rows,yl,lyEnd),hasYL=lyEnd>first;
+  $('x-ytd-title').textContent=`Year to date, ${y}`;
+  $('x-ytd-table').tHead.innerHTML=`<tr><th>Since 1 January</th><th class="r">${y}</th><th class="r">${y-1}</th><th class="r">YoY</th></tr>`;
+  $('x-ytd-table').tBodies[0].innerHTML=M.map(([l,k])=>`<tr><td><strong>${l}</strong></td><td class="num cur">${money0(Y0[k])}</td><td class="num">${hasYL?money0(YL[k]):'—'}</td>${dcell(Y0[k],YL[k],hasYL)}</tr>`).join('');
+  let note=`Every figure follows the filter above. ${lab} compares with the ${unit} before. YoY compares with the same ${unit} a year earlier, and year to date with the same stretch of last year. Saved, Guy added, Lea added and Gold bought are what went in during the period, so the opening balance never inflates them.`;
+  if(!hasLy)note+=` There is no ${ly.l} in the ledger yet, so YoY shows n/a until a year of data exists.`;
+  if(C0.touchesJan||P0.touchesJan||L0.touchesJan||Y0.touchesJan||YL.touchesJan)note+=` January 2026 counts as ${money0(jan26())} (your real saving that month, set under By year in Tables), not the earlier savings it also held.`;
+  if(currentFilter==='all'&&typeof pathFor==='function'){
+    try{const t=computeAnalytics(rows),ck=toYMD(cur.b-1).slice(0,7),path=pathFor(y,t);
+      if(path){const cb=cumAt(t,ck),g=goalRatio(y,path,t,ck,cb);if(g!=null)note+=` Against the phased goal for ${MON[+ck.slice(5)-1]} ${y}, you are ${(g>=0?'+':'−')+Math.abs(g*100).toFixed(1)}% (${signed0(cb-path.at(ck))}).`;}}catch(e){}
+  }
+  $('x-sc-note').textContent=note;
+}
+$('x-sc-mode').addEventListener('click',e=>{const b=e.target.closest('button[data-m]');if(!b)return;SC.mode=b.dataset.m;SC.sel='';renderScore();});
+$('x-sc-sel').onchange=e=>{SC.sel=e.target.value;renderScore();};
+const stepSc=n=>{const o=scOptions(getFilteredData()),i=o.findIndex(x=>x.v===SC.sel);const j=i-n;if(i>=0&&j>=0&&j<o.length){SC.sel=o[j].v;renderScore();}};
+$('x-sc-prev').onclick=()=>stepSc(-1);$('x-sc-next').onclick=()=>stepSc(1);
+
 const prevRA2=renderAll;
 renderAll=function(){
   prevRA2();
   try{
     if(allData.length){
       const t=computeAnalytics(getFilteredData());
-      if(t.keys.length){fillVarYears(t);renderCtc();filterVar();renderLots();}
+      if(t.keys.length){fillVarYears(t);renderCtc();filterVar();renderLots();renderScore();}
     }
     REG.forEach(applySort);
     applyView();
