@@ -1,4 +1,4 @@
-const V='lg-ledger-v3';
+const V='lg-ledger-v7';
 const CORE=['./','index.html','app-extras.js','manifest.json','icon-180.png','icon-192.png','icon-512.png'];
 const CDN=[
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',

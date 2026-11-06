@@ -199,10 +199,17 @@ td.num{text-align:right;white-space:nowrap}
 
 .empty-note{text-align:center;padding:34px 20px;color:var(--muted);font-size:13.5px}
 
-.hero-years{display:flex;gap:6px;margin:0 0 12px}
+.hero-years{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
 .hero-years button{background:rgba(255,255,255,.1);color:#C9D4DE;border:0;border-radius:999px;padding:5px 13px;font:600 12px "IBM Plex Sans",sans-serif;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .hero-years button.active{background:#F2F4F6;color:#16232F}
 #hero-formula{margin-top:-8px}
+.hero-years button.future{opacity:.62}
+.hero-score{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:2px 0 14px}
+.score{background:rgba(255,255,255,.07);border-radius:12px;padding:10px 10px 9px;min-width:0}
+.score .l{font-size:11px;color:#8FA1B2;font-weight:600;margin-bottom:3px}
+.score .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+.score .v.good{color:#7FC8A4}.score .v.bad{color:#E39B93}
+.score .s{font-size:11px;color:#9DAEBD;margin-top:3px;line-height:1.35}
 
 /* focus visibility */
 button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-visible{outline:2px solid var(--cash);outline-offset:2px}
@@ -237,6 +244,11 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
     <p class="verdict" id="verdict">—</p>
     <div class="sub-verdict" id="sub-verdict"></div>
     <div class="sub-verdict" id="hero-formula" hidden></div>
+    <div class="hero-score" id="hero-score">
+      <div class="score"><div class="l">Saved so far</div><div class="v" id="sc-saved">—</div><div class="s" id="sc-saved-s"></div></div>
+      <div class="score"><div class="l">vs last year</div><div class="v" id="sc-yoy">—</div><div class="s" id="sc-yoy-s"></div></div>
+      <div class="score"><div class="l">vs phased goal</div><div class="v" id="sc-goal">—</div><div class="s" id="sc-goal-s"></div></div>
+    </div>
     <div class="hero-chart-wrap"><canvas id="glidepath"></canvas></div>
     <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
     <div class="progress-caption"><span id="progress-pct">0%</span><span id="progress-goal">$30,000</span></div>
@@ -378,6 +390,7 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
             <th class="r">Net worth</th>
             <th class="r">Δ</th>
             <th class="r">Δ%</th>
+            <th class="r">YoY</th>
             <th class="r">Guy</th>
             <th class="r">Lea</th>
           </tr>
@@ -590,47 +603,85 @@ function updateKPIs(t){
 
 /* ==================== hero glidepath ==================== */
 let heroYear = null;
+const LAST_YEAR = 2030;
 const fmtK = v => v >= 1000 ? '$' + (v/1000).toFixed(v >= 10000 ? 0 : 1).replace(/\.0$/,'') + 'k' : money0(v);
 const pad2 = n => String(n).padStart(2,'0');
+const pctS = x => (x>=0?'+':'−') + Math.abs(x*100).toFixed(1) + '%';
+const ratio = (a,b) => (b != null && b > 0) ? a/b - 1 : null;
 function cumAt(t,k){ let v=0; for(const kk of t.keys){ if(kk<=k) v=t.cumulative[kk]; else break; } return v; }
 function yearsAvail(t){
   const first = +t.keys[0].slice(0,4);
-  const last = Math.max(+t.keys[t.keys.length-1].slice(0,4), new Date().getFullYear(), 2027);
+  const last = Math.max(LAST_YEAR, +t.keys[t.keys.length-1].slice(0,4));
   const ys = []; for(let y=first;y<=last;y++) ys.push(y); return ys;
 }
-/* 2026: fixed $30k. Later years: avg monthly saving of the previous year (January 2026 excluded)
-   x 12 x 1.2, plus the previous year's closing balance. */
+/* 2026: fixed $30k. Every later year: average monthly saving of the previous year x 12 x 1.2, plus that year's
+   closing balance. January 2026 is left out of the average because it holds the savings from before.
+   A year whose previous year has no data yet has no target ("pending"). */
 function targetFor(Y,t){
   if(Y <= 2026) return {goal:GOAL};
   const P = Y-1;
   let ks = t.keys.filter(k=>k.startsWith(P+'-'));
   if(P === 2026) ks = ks.filter(k=>k !== '2026-01');
-  const avg = ks.length ? ks.reduce((s,k)=>s+t.comp[k].delta,0)/ks.length : 0;
+  if(!ks.length) return {pending:true, P};
+  const avg = ks.reduce((s,k)=>s+t.comp[k].delta,0)/ks.length;
   const closing = cumAt(t, `${P}-12`);
-  return {goal: avg*12*1.2 + closing, avg, closing, prov: new Date().getFullYear() <= P};
+  return {goal: avg*12*1.2 + closing, avg, closing, P, prov: new Date().getFullYear() <= P};
+}
+/* Phased goal: a straight line from where the year starts to its target. */
+function pathFor(Y,t){
+  const tg = targetFor(Y,t);
+  if(tg.pending) return null;
+  const firstYear = +t.keys[0].slice(0,4);
+  const firstKey = Y === firstYear ? t.keys[0] : `${Y-1}-12`;
+  const firstVal = Y === firstYear ? t.cumulative[t.keys[0]] : cumAt(t, `${Y-1}-12`);
+  const span = monthsBetween(firstKey, `${Y}-12`);
+  return { tg, goal: tg.goal, firstKey, firstVal, span,
+           at: k => span > 0 ? firstVal + (tg.goal - firstVal) * (monthsBetween(firstKey,k)/span) : tg.goal };
 }
 
 function updateHero(t){
+  const el = id => document.getElementById(id);
   const years = yearsAvail(t), cy = new Date().getFullYear();
   if(heroYear == null || !years.includes(heroYear))
     heroYear = Math.max(years[0], Math.min(years[years.length-1], Math.max(+t.keys[t.keys.length-1].slice(0,4), cy)));
-  document.getElementById('hero-years').innerHTML = years.map(y =>
-    `<button data-y="${y}" class="${y===heroYear?'active':''}">${y}${y>cy?' preview':''}</button>`).join('');
+  el('hero-years').innerHTML = years.map(y =>
+    `<button data-y="${y}" class="${y===heroYear?'active':''}${y>cy?' future':''}">${y}</button>`).join('');
 
-  const Y = heroYear, firstYear = years[0], endKey = `${Y}-12`;
-  const tg = targetFor(Y,t), goal = tg.goal;
+  const Y = heroYear, firstYear = years[0], P = Y-1, endKey = `${Y}-12`;
+  const path = pathFor(Y,t);
+  const parts = ['.hero-chart-wrap','.progress-track','.progress-caption','.hero-stats'].map(s=>document.querySelector(s));
+  const showParts = on => parts.forEach(p=>{ if(p) p.style.display = on ? '' : 'none'; });
+  const tiles = (a,as,b,bs,c,cs,bc,cc) => {
+    el('sc-saved').innerText=a; el('sc-saved-s').innerText=as;
+    const y=el('sc-yoy'); y.innerText=b; y.className='v'+(bc||''); el('sc-yoy-s').innerText=bs;
+    const g=el('sc-goal'); g.innerText=c; g.className='v'+(cc||''); el('sc-goal-s').innerText=cs;
+  };
+
+  if(!path){
+    if(charts.glide){ charts.glide.destroy(); charts.glide = null; }
+    showParts(false);
+    el('hero-eyebrow').innerText = `Target for ${Y}`;
+    el('verdict').innerHTML = `The ${Y} target is set from ${P}’s savings once ${P} has data.`;
+    el('sub-verdict').innerText = '';
+    el('hero-formula').hidden = true;
+    tiles('—','','—','','—','');
+    return;
+  }
+  showParts(true);
+
+  const tg = path.tg, goal = path.goal;
   const keysY = t.keys.filter(k=>k<=endKey);
   const lastKey = keysY.length ? keysY[keysY.length-1] : null;
-  const opening = Y > firstYear ? cumAt(t, `${Y-1}-12`) : null;
-  const firstKey = Y === firstYear ? t.keys[0] : `${Y-1}-12`;
-  const firstVal = Y === firstYear ? t.cumulative[t.keys[0]] : opening;
+  const started = !!lastKey && lastKey >= `${Y}-01`;
+  const firstKey = path.firstKey, firstVal = path.firstVal;
+  const opening = Y > firstYear ? firstVal : null;
   const refKey = (lastKey && lastKey >= firstKey) ? lastKey : firstKey;
   const current = cumAt(t, refKey);
 
-  const span = monthsBetween(firstKey, endKey), axis = [];
+  const span = path.span, axis = [];
   for(let i=0;i<=span;i++) axis.push(addMonths(firstKey, i));
   const actual = axis.map(k => k <= refKey ? cumAt(t,k) : null);
-  const glide = axis.map((k,i) => span > 0 ? firstVal + (goal - firstVal) * (i/span) : goal);
+  const glide = axis.map(k => path.at(k));
 
   const lastN = keysY.map(k=>t.comp[k].delta).slice(-3);
   const runRate = lastN.length ? lastN.reduce((a,b)=>a+b,0)/lastN.length : 0;
@@ -640,11 +691,29 @@ function updateHero(t){
   const gap = goal - current;
   const required = remaining > 0 ? gap / remaining : 0;
   const projected = current + runRate * remaining;
-  const glideNow = firstVal + (goal - firstVal) * (span > 0 ? monthsBetween(firstKey, refKey)/span : 1);
+  const glideNow = path.at(refKey);
   const pace = current - glideNow, ahead = pace >= 0;
 
+  /* ---- the three numbers that matter ---- */
+  if(!started && Y > firstYear){
+    tiles(money0(current), 'opening balance', '—', `Starts January ${Y}`, '—', `Target ${fmtK(goal)}`);
+  } else {
+    const mi = +refKey.slice(5), lyKey = `${P}-${pad2(mi)}`;
+    const hasLY = Y > firstYear && lyKey >= t.keys[0];
+    const bLY = hasLY ? cumAt(t,lyKey) : null;
+    const yoy = ratio(current, bLY), vsg = ratio(current, glideNow);
+    tiles(money0(current),
+          Y > firstYear ? `${money0(current - opening)} of it saved in ${Y}` : 'balance since the start',
+          yoy == null ? '—' : pctS(yoy),
+          yoy == null ? 'No earlier year to compare yet' : `${signed0(current-bLY)} vs ${MONTHS_S[mi-1]} ${P} (${money0(bLY)})`,
+          vsg == null ? '—' : pctS(vsg),
+          `${signed0(pace)} vs the path (${money0(glideNow)})`,
+          yoy == null ? '' : (yoy >= 0 ? ' good' : ' bad'),
+          vsg == null ? '' : (vsg >= 0 ? ' good' : ' bad'));
+  }
+
   let v;
-  if(Y > cy) v = `${Y} starts from <span class="ahead">${money0(opening)}</span>. The target is ${fmtK(goal)}.`;
+  if(!started && Y > firstYear) v = `${Y} starts from <span class="ahead">${money0(current)}</span>. The target is ${fmtK(goal)}.`;
   else if(Y < cy && remaining === 0) v = gap <= 0
     ? `${Y} closed at <span class="ahead">${money0(current)}</span>, above its ${fmtK(goal)} target.`
     : `${Y} closed <span class="behind">${money0(gap)} short</span> of its ${fmtK(goal)} target.`;
@@ -652,47 +721,45 @@ function updateHero(t){
   else v = ahead
     ? `You're <span class="ahead">${money0(Math.abs(pace))} ahead</span> of the path to ${fmtK(goal)}.`
     : `You're <span class="behind">${money0(Math.abs(pace))} behind</span> the path to ${fmtK(goal)}.`;
-  document.getElementById('verdict').innerHTML = v;
+  el('verdict').innerHTML = v;
 
   let sub = remaining > 0
     ? `${remaining} month${remaining>1?'s':''} left · save ${money0(required)}/mo to land exactly on target, vs a current run rate of ${money0(runRate)}/mo.`
     : `Target month reached.`;
-  if(Y > firstYear) sub = `Opening balance ${money0(opening)} · saved ${money0(current-opening)} in ${Y} so far. ` + sub;
-  document.getElementById('sub-verdict').innerText = sub;
+  el('sub-verdict').innerText = sub;
 
-  const fm = document.getElementById('hero-formula');
+  const fm = el('hero-formula');
   if(Y > 2026){
-    const P = Y-1;
     fm.hidden = false;
     fm.innerText = `Target = average monthly saving in ${P}${P===2026?' (January left out)':''}, ${money0(tg.avg)}, × 12 × 1.2, plus the ${P} closing balance of ${money0(tg.closing)}.${tg.prov?` Provisional until ${P} closes.`:''}`;
   } else fm.hidden = true;
 
-  document.getElementById('hero-eyebrow').innerText = `Target — ${money0(goal)} by December ${Y}`;
-  document.getElementById('h-projected-label').innerText = `Projected Dec '${String(Y).slice(2)}`;
-  document.getElementById('h-gap').innerText = gap > 0 ? money0(gap) : 'Closed ✓';
-  document.getElementById('h-required').innerText = remaining > 0 ? money0(required) : '—';
-  const rr = document.getElementById('h-runrate');
+  el('hero-eyebrow').innerText = `Target — ${money0(goal)} by December ${Y}`;
+  el('h-projected-label').innerText = `Projected Dec '${String(Y).slice(2)}`;
+  el('h-gap').innerText = gap > 0 ? money0(gap) : 'Closed ✓';
+  el('h-required').innerText = remaining > 0 ? money0(required) : '—';
+  const rr = el('h-runrate');
   rr.innerText = money0(runRate);
   rr.className = 'v ' + (runRate >= required ? 'good' : 'bad');
-  const pj = document.getElementById('h-projected');
+  const pj = el('h-projected');
   pj.innerText = money0(projected);
   pj.className = 'v ' + (projected >= goal ? 'good' : 'bad');
 
   const pct = Math.max(0, Math.min(100, current/goal*100));
-  document.getElementById('progress-fill').style.width = pct + '%';
-  document.getElementById('progress-pct').innerText = `${money0(current)} · ${pct.toFixed(0)}%`;
-  document.getElementById('progress-goal').innerText = money0(goal);
+  el('progress-fill').style.width = pct + '%';
+  el('progress-pct').innerText = `${money0(current)} · ${pct.toFixed(0)}%`;
+  el('progress-goal').innerText = money0(goal);
 
   const labels = axis.map((k,i) => (i === 0 && Y > firstYear) ? `Dec ’${String(Y-1).slice(2)}` : fmtMonthShort(k));
   if(charts.glide) charts.glide.destroy();
-  charts.glide = new Chart(document.getElementById('glidepath'),{
+  charts.glide = new Chart(el('glidepath'),{
     type:'line',
     data:{
       labels,
       datasets:[
         { label:'Balance', data:actual, borderColor:C.heroLine, backgroundColor:'rgba(91,135,181,0.18)',
           fill:true, tension:0.3, borderWidth:2.5, pointRadius:3, pointBackgroundColor:C.heroLine, spanGaps:true },
-        { label:`Glidepath to ${fmtK(goal)}`, data:glide, borderColor:C.heroGold, borderDash:[6,5],
+        { label:`Phased goal to ${fmtK(goal)}`, data:glide, borderColor:C.heroGold, borderDash:[6,5],
           borderWidth:1.8, pointRadius:0, fill:false, tension:0 },
         { label:'Projection (run rate)', data:projection, borderColor:C.heroProj, borderDash:[2,4],
           borderWidth:1.8, pointRadius:0, fill:false, tension:0 }
@@ -952,7 +1019,7 @@ function updateComparisonTable(t){
   tbody.innerHTML = '';
   const keys = t.keys;
   if(keys.length < 1){
-    tbody.innerHTML = `<tr><td colspan="6" class="empty-note">Not enough data yet</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-note">Not enough data yet</td></tr>`;
     return;
   }
   let rows = [];
@@ -961,9 +1028,11 @@ function updateComparisonTable(t){
       const prev = i > 0 ? t.cumulative[keys[i-1]] : 0;
       const curr = t.cumulative[k];
       const change = curr - prev;
+      const ly = addMonths(k,-12);
       rows.push({
         period: fmtMonthFull(k), value: curr, change,
         pct: prev !== 0 ? change/prev*100 : null,
+        yoy: ly >= keys[0] ? ratio(curr, cumAt(t,ly)) : null,
         guy: t.comp[k].guyTotal, lea: t.comp[k].leaTotal
       });
     });
@@ -981,9 +1050,11 @@ function updateComparisonTable(t){
       const prev = i > 0 ? qmap[qorder[i-1]].last : 0;
       const curr = qmap[q].last;
       const change = curr - prev;
+      const pq = q.replace(/\d{4}$/, y => String(+y-1));
       rows.push({
         period: q, value: curr, change,
         pct: prev !== 0 ? change/prev*100 : null,
+        yoy: qmap[pq] ? ratio(curr, qmap[pq].last) : null,
         guy: qmap[q].guy, lea: qmap[q].lea
       });
     });
@@ -997,6 +1068,7 @@ function updateComparisonTable(t){
       <td class="num">${money2(r.value)}</td>
       <td class="num ${cls}">${signed0(r.change)}</td>
       <td class="num ${cls}">${r.pct == null ? '—' : (r.pct>=0?'+':'−') + Math.abs(r.pct).toFixed(1) + '%'}</td>
+      <td class="num ${r.yoy==null?'':(r.yoy>=0?'pos':'neg')}">${r.yoy == null ? '—' : pctS(r.yoy)}</td>
       <td class="num">${money0(r.guy)}</td>
       <td class="num">${money0(r.lea)}</td>`;
     tbody.appendChild(tr);
@@ -1081,42 +1153,43 @@ function updateTrends(t, rows){
         plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>` ${signed0(c.raw)}`}} } } };
   } else {
     const Y = heroYear || new Date().getFullYear(), P = Y-1;
-    $('tr-title').innerText = `${Y} vs ${P}`;
-    thead.innerHTML = `<tr><th>Month</th><th class="r">${P} saved</th><th class="r">${Y} saved</th><th class="r">Δ</th><th class="r">Δ%</th><th class="r">${P} balance</th><th class="r">${Y} balance</th></tr>`;
-    if(!t.keys.some(k=>k.startsWith(P+'-'))){ $('tr-head').innerText='—'; $('tr-sub').innerText='Year over year starts once there are two years of data.'; return; }
-    const lastAll = t.keys[t.keys.length-1], firstAll = t.keys[0];
-    const m2 = []; let lastYm = 0;
+    $('tr-title').innerText = `${Y} vs ${P}, month by month`;
+    thead.innerHTML = `<tr><th>Month</th><th class="r">${P} balance</th><th class="r">${Y} balance</th><th class="r">YoY</th><th class="r">vs phased goal</th></tr>`;
+    const path = pathFor(Y,t), firstAll = t.keys[0], lastAll = t.keys[t.keys.length-1];
+    const m2 = [];
     for(let m=1;m<=12;m++){
       const kp = `${P}-${pad2(m)}`, ky = `${Y}-${pad2(m)}`;
-      const dP = t.comp[kp] ? t.comp[kp].delta : null, dY = t.comp[ky] ? t.comp[ky].delta : null;
-      if(dY !== null) lastYm = m;
-      m2.push({m, dP, dY,
-        bP: (kp>=firstAll && kp<=lastAll) ? cumAt(t,kp) : null,
-        bY: (ky>=firstAll && ky<=lastAll) ? cumAt(t,ky) : null});
+      const bP = (kp>=firstAll && kp<=lastAll) ? cumAt(t,kp) : null;
+      const bY = t.comp[ky] || (ky>=firstAll && ky<=lastAll) ? cumAt(t,ky) : null;
+      const pa = path ? path.at(ky) : null;
+      m2.push({m, bP, bY, pa, yoy: bY!=null ? ratio(bY,bP) : null, vsg: bY!=null ? ratio(bY,pa) : null, has: !!t.comp[ky]});
     }
-    const skipJan = P === 2026;
-    let a = 0, b = 0;
-    m2.forEach(r=>{ if(r.m<=lastYm && !(skipJan && r.m===1)){ a += r.dY||0; b += r.dP||0; } });
-    if(!lastYm){ $('tr-head').innerText = '—'; $('tr-sub').innerText = `No ${Y} entries yet.`; }
-    else {
-      $('tr-head').innerText = signed0(a-b);
-      $('tr-sub').innerText = `Year to date: ${money0(a)} in ${Y} vs ${money0(b)} in ${P} (${pctTxt(a,b)})${skipJan?'. January is left out because January 2026 holds the savings from before.':''}`;
+    const reached = m2.filter(r=>r.has);
+    if(!reached.length){
+      $('tr-head').innerText = '—';
+      $('tr-sub').innerText = path ? `No ${Y} entries yet. The phased goal line below is where ${Y} should be each month.` : `${Y} has no target until ${P} has data.`;
+    } else {
+      const r = reached[reached.length-1], mn = MONTHS_S[r.m-1];
+      $('tr-head').innerText = r.yoy == null ? '—' : `${pctS(r.yoy)} vs last year`;
+      $('tr-sub').innerText = (r.bP == null
+        ? `No ${mn} ${P} to compare with yet.`
+        : `${money0(r.bY)} in ${mn} ${Y} against ${money0(r.bP)} in ${mn} ${P}, ${signed0(r.bY-r.bP)}.`)
+        + (r.vsg == null ? '' : ` ${pctS(r.vsg)} vs the phased goal of ${money0(r.pa)}.`);
     }
     m2.forEach(r=>{
-      if(r.dP === null && r.dY === null) return;
-      const comparable = r.dP !== null && r.dY !== null && !(skipJan && r.m===1), d = comparable ? r.dY - r.dP : null;
+      if(r.bP === null && r.bY === null) return;
       const tr = document.createElement('tr');
       tr.innerHTML = `<td><strong>${MONTHS_S[r.m-1]}</strong></td>
-        <td class="num">${r.dP===null?'—':signed0(r.dP)}</td><td class="num">${r.dY===null?'—':signed0(r.dY)}</td>
-        <td class="num ${d===null?'':(d>=0?'pos':'neg')}">${d===null?'—':signed0(d)}</td>
-        <td class="num">${comparable ? pctTxt(r.dY, r.dP) : '—'}</td>
-        <td class="num">${r.bP===null?'—':money0(r.bP)}</td><td class="num">${r.bY===null?'—':money0(r.bY)}</td>`;
+        <td class="num">${r.bP===null?'—':money0(r.bP)}</td><td class="num">${r.bY===null?'—':money0(r.bY)}</td>
+        <td class="num ${r.yoy==null?'':(r.yoy>=0?'pos':'neg')}">${r.yoy==null?'—':pctS(r.yoy)}</td>
+        <td class="num ${r.vsg==null?'':(r.vsg>=0?'pos':'neg')}">${r.vsg==null?'—':pctS(r.vsg)}</td>`;
       tbody.appendChild(tr);
     });
-    cfgChart = { type:'line',
-      data:{ labels:MONTHS_S, datasets:[
-        {label:`${P} balance`, data:m2.map(r=>r.bP), borderColor:'#9AA6B1', backgroundColor:'rgba(154,166,177,0.1)', fill:true, tension:0.3, borderWidth:2, pointRadius:2.5},
-        {label:`${Y} balance`, data:m2.map(r=>r.bY), borderColor:C.cash, backgroundColor:'rgba(47,93,138,0.08)', fill:true, tension:0.3, borderWidth:2.4, pointRadius:2.5}]},
+    const ds = [
+      {label:`${P} balance`, data:m2.map(r=>r.bP), borderColor:'#9AA6B1', backgroundColor:'rgba(154,166,177,0.1)', fill:true, tension:0.3, borderWidth:2, pointRadius:2.5},
+      {label:`${Y} balance`, data:m2.map(r=>r.bY), borderColor:C.cash, backgroundColor:'rgba(47,93,138,0.08)', fill:true, tension:0.3, borderWidth:2.4, pointRadius:2.5}];
+    if(path) ds.push({label:'Phased goal', data:m2.map(r=>r.pa), borderColor:C.gold, borderDash:[6,5], borderWidth:1.8, pointRadius:0, fill:false, tension:0});
+    cfgChart = { type:'line', data:{ labels:MONTHS_S, datasets:ds },
       options:{ responsive:true, maintainAspectRatio:false,
         scales:{ y:{ticks:{callback:tick}, grid:{color:'#F0F2F5'}}, x:{grid:{display:false}} },
         plugins:{ legend:{position:'bottom', labels:{boxWidth:14, boxHeight:2, padding:12, font:{size:11}}},
