@@ -464,9 +464,19 @@ computeAnalytics=function(rows){
   if(p>0&&t.goldGrams>0){
     let v=0;rows.forEach(r=>{if(!(r.name||'').includes('loan')&&(r.gold||0)>0)v+=r.gold*p*rowKarat(r)/24;});
     t.gold=v;t.goldPx=v/t.goldGrams;t.net=t.cash+t.gold-t.loan;
+    const adj=goldAdj(rows);t.cumulativeCost=Object.assign({},t.cumulative);t.goldGain={};
+    t.keys.forEach(k=>{const a=adj(k);t.goldGain[k]=a;t.cumulative[k]+=a;});
   }
   return t;
 };
+/* market value minus price paid for the gold held at the end of month k (0 when gold is valued at cost) */
+function goldAdj(rows){
+  if(!(px24()>0))return ()=>0;
+  let m={};try{goldMonthly(rows).forEach(r=>{if(r.value!=null)m[r.k]=r.value-r.cost;});}catch(e){m={};}
+  const ks=Object.keys(m).sort();
+  return k=>{if(k in m)return m[k];let v=0;for(const kk of ks){if(kk<=k)v=m[kk];else break;}return ks.length&&k>ks[ks.length-1]?m[ks[ks.length-1]]:(ks.length&&k<ks[0]?0:v);};
+}
+window.lgGoldAdj=rows=>goldAdj(rows);
 const baseKPIs=updateKPIs;
 updateKPIs=function(t){
   baseKPIs(t);
@@ -839,7 +849,13 @@ const nowKey=()=>toYMD(Date.now()).slice(0,7);
 
 /* ---------- scorecard ---------- */
 $('filter-section').insertAdjacentHTML('afterend',`<div class="section" id="x-score">
- <div class="section-header"><h2>Scorecard</h2><div class="toggle-group" id="x-sc-mode"><button type="button" data-m="month" class="active">Month</button><button type="button" data-m="week">Week</button></div></div>
+ <div class="section-header"><h2>Scorecard</h2><select class="month-select" id="xs-per" aria-label="Period for the splits and the monthly chart"></select></div>
+ <div class="xs-pies">
+  <div class="chart-card xs-pie"><div class="title">Guy and Lea</div><div class="desc" id="xs-p1d"></div><div class="xs-pw"><canvas id="xs-p1"></canvas><div class="xs-c" id="xs-p1c"></div></div><div class="xs-leg" id="xs-p1l"></div></div>
+  <div class="chart-card xs-pie"><div class="title">Cash and gold</div><div class="desc" id="xs-p2d"></div><div class="xs-pw"><canvas id="xs-p2"></canvas><div class="xs-c" id="xs-p2c"></div></div><div class="xs-leg" id="xs-p2l"></div></div>
+ </div>
+ <div class="chart-card"><div class="title">Saved per month</div><div class="desc" id="xs-md"></div><div class="chart-wrap"><canvas id="xs-m"></canvas></div></div>
+ <div class="xs-sub"><h3 class="x-h3">Compare a month or week</h3><div class="toggle-group" id="x-sc-mode"><button type="button" data-m="month" class="active">Month</button><button type="button" data-m="week">Week</button></div></div>
  <div class="x-sc-pick"><button type="button" class="x-link" id="x-sc-prev" aria-label="Earlier">‹</button><select class="month-select" id="x-sc-sel" aria-label="Period"></select><button type="button" class="x-link" id="x-sc-next" aria-label="Later">›</button></div>
  <div class="table-container"><table id="x-sc-table" style="min-width:540px"><thead></thead><tbody></tbody></table></div>
  <h3 class="x-h3" id="x-ytd-title">Year to date</h3>
@@ -880,9 +896,86 @@ function bucket(rows,a,b){
   });
   return o;
 }
-const balanceTo=(rows,b)=>rows.reduce((s,d)=>d.sortTs<b?s+rowAmt(d):s,0);
+const balanceTo=(rows,b)=>rows.reduce((s,d)=>d.sortTs<b?s+rowAmt(d):s,0)+(window.lgGoldAdj?window.lgGoldAdj(rows)(toYMD(b-1).slice(0,7)):0);   /* gold at that month's market price */
 const dcell=(a,b,ok)=>{if(!ok)return '<td class="num">n/a</td>';const v=pcOf(a,b);return `<td class="num">${arrow(v)}<small class="${a-b>=0?'pos':'neg'}">${signed0(a-b)}</small></td>`;};
+/* ---------- scorecard top: two splits for a chosen period, then saving per month ---------- */
+const st3=document.createElement('style');
+st3.textContent=`.xs-bar{display:flex;justify-content:flex-end;margin:-2px 0 10px}
+.xs-pies{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.xs-pie{padding:12px 12px 10px!important;min-width:0}
+.xs-pw{position:relative;height:140px;margin-top:4px}
+.xs-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;text-align:center}
+.xs-c b{font:700 15px "IBM Plex Sans",sans-serif;color:var(--ink)}.xs-c span{font-size:10px;color:var(--muted);margin-top:1px}
+.xs-leg{display:grid;gap:4px;margin-top:10px;font-size:12px;color:var(--ink-2)}
+.xs-leg div{display:flex;align-items:center;gap:6px;min-width:0}.xs-leg i{flex:0 0 9px;height:9px;border-radius:3px}
+.xs-leg b{margin-left:auto;font-weight:700}.xs-leg span{color:var(--muted);font-size:11px}
+.xs-sub{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:18px 0 8px}.xs-sub .x-h3{margin:0}`;
+document.head.appendChild(st3);
+let XS='ytd';
+function perOptions(rows){
+  const o=[['ytd','Year to date'],['3m','Last 3 months'],['12m','Last 12 months'],['all','All time']];
+  const ts=rows.map(r=>r.sortTs).filter(Boolean);if(!ts.length)return o;
+  const a=new Date(Math.min(...ts)),b=new Date(Math.max(Math.max(...ts),Date.now()));
+  for(let y=b.getFullYear(),m=b.getMonth();y>a.getFullYear()||(y===a.getFullYear()&&m>=a.getMonth());){o.push([`${y}-${p2(m+1)}`,fm(y,m)]);if(--m<0){m=11;y--;}}
+  return o;
+}
+function perRange(v,rows){
+  const now=new Date(),y=now.getFullYear(),m=now.getMonth(),endB=new Date(y,m+1,1).getTime();
+  const first=Math.min(...rows.map(r=>r.sortTs).filter(Boolean));
+  const monthsFrom=(a,b)=>{const out=[];for(let d=new Date(a);d.getTime()<b;d.setMonth(d.getMonth()+1))out.push(`${d.getFullYear()}-${p2(d.getMonth()+1)}`);return out;};
+  if(v==='ytd'){const a=new Date(y,0,1).getTime();return {a,b:endB,label:`${y} so far`,months:monthsFrom(a,endB)};}
+  if(v==='3m'||v==='12m'){const n=v==='3m'?3:12,a=new Date(y,m-n+1,1).getTime();return {a,b:endB,label:v==='3m'?'last 3 months':'last 12 months',months:monthsFrom(a,endB)};}
+  if(v==='all'){const f=new Date(first),a=new Date(f.getFullYear(),f.getMonth(),1).getTime();return {a:0,b:endB,label:'all time',months:monthsFrom(a,endB)};}
+  const [yy,mm]=v.split('-').map(Number),a=new Date(yy,mm-1,1).getTime(),b=new Date(yy,mm,1).getTime();
+  return {a,b,label:fm(yy,mm-1),months:monthsFrom(new Date(yy,0,1).getTime(),Math.min(endB,new Date(yy+1,0,1).getTime())),sel:v};
+}
+const legend=items=>{const tot=items.reduce((s,i)=>s+Math.max(0,i[1]),0);return items.map(([l,v,c])=>`<div><i style="background:${c}"></i>${l}<b>${tot>0&&v>0?Math.round(v/tot*100)+'%':'—'}</b></div><div style="padding-left:15px"><span>${money0(v)}</span></div>`).join('');};
+function donut(id,vals,cols){
+  if(charts[id]){charts[id].destroy();charts[id]=null;}
+  const has=vals.some(v=>v>0);
+  charts[id]=new Chart($(id),{type:'doughnut',data:{labels:vals.map((_,i)=>i),datasets:[{data:has?vals.map(v=>Math.max(0,v)):[1],backgroundColor:has?cols:['#E6EAEE'],borderWidth:0}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'70%',plugins:{datalabels:{display:false},legend:{display:false},tooltip:{enabled:false}}}});
+}
+function renderTop(){
+  const rows=getFilteredData();if(!rows.length)return;
+  JF=janF();
+  const opts=perOptions(rows);if(!opts.some(o=>o[0]===XS))XS='ytd';
+  $('xs-per').innerHTML=opts.map(([v,l])=>`<option value="${v}">${esc(l)}</option>`).join('');$('xs-per').value=XS;
+  const R=perRange(XS,rows),B=bucket(rows,R.a,R.b),gl=B.guy+B.lea;
+  /* 1. Guy and Lea: what each put in during the period */
+  donut('xs-p1',[B.guy,B.lea],[C.cash,C.lea]);
+  $('xs-p1c').innerHTML=gl>0?`<b>${money0(gl)}</b><span>put in</span>`:`<b>—</b><span>nothing yet</span>`;
+  $('xs-p1d').textContent=`Deposits, ${R.label}`;
+  $('xs-p1l').innerHTML=legend([['Guy',B.guy,C.cash],['Lea',B.lea,C.lea]]);
+  /* 2. cash and gold: where the money sits at the end of the period, gold at that month's market price */
+  const end=R.b,mk=toYMD(Math.min(end,Date.now()+1)-1).slice(0,7);
+  let cash=0,loan=0,goldCost=0;rows.forEach(d=>{if(!(d.sortTs<end))return;if(isLoanRow(d))loan-=d.usd||0;else{cash+=d.usd||0;goldCost+=(d.gold||0)*(d.goldPrice||0);}});
+  let gold=goldCost;
+  try{const gm=(window.lgGoldMonthly?window.lgGoldMonthly(rows):[]).filter(r=>r.k<=mk&&r.value!=null);if(gm.length&&px24()>0)gold=gm[gm.length-1].value;}catch(e){}
+  donut('xs-p2',[cash,gold],[C.cash,C.gold]);
+  const net=cash+gold-loan;
+  $('xs-p2c').innerHTML=`<b>${money0(net)}</b><span>net worth</span>`;
+  $('xs-p2d').textContent=R.sel?`At the end of ${R.label}`:'Today, gold at market';
+  $('xs-p2l').innerHTML=legend([['Cash',cash,C.cash],['Gold',gold,C.gold]])+(loan>0.5?`<div><i style="background:${C.debt}"></i>Loans<b class="neg">−${money0(loan)}</b></div>`:'');
+  /* 3. saving per month, not cumulative */
+  const M=R.months.map(k=>{const [yy,mm]=k.split('-').map(Number);return {k,...bucket(rows,new Date(yy,mm-1,1).getTime(),new Date(yy,mm,1).getTime())};});
+  const other=M.map(o=>o.saved-o.guy-o.lea);
+  const avg=M.length?M.reduce((s,o)=>s+o.saved,0)/M.length:0;
+  if(charts.xsm){charts.xsm.destroy();charts.xsm=null;}
+  const hl=k=>!R.sel||k===R.sel?1:.35;
+  charts.xsm=new Chart($('xs-m'),{type:'bar',data:{labels:M.map(o=>lbl(o.k)),datasets:[
+    {label:'Guy',data:M.map(o=>o.guy),backgroundColor:M.map(o=>`rgba(47,93,138,${hl(o.k)})`),stack:'s'},
+    {label:'Lea',data:M.map(o=>o.lea),backgroundColor:M.map(o=>`rgba(138,78,125,${hl(o.k)})`),stack:'s'},
+    ...(other.some(v=>Math.abs(v)>0.5)?[{label:'Loans',data:other,backgroundColor:M.map(o=>`rgba(176,67,58,${hl(o.k)})`),stack:'s'}]:[]),
+    {type:'line',label:'Saved',data:M.map(o=>o.saved),borderColor:C.ink,backgroundColor:C.ink,borderWidth:0,pointRadius:3,pointStyle:'line',showLine:false},
+    {type:'line',label:`Average ${money0(avg)}`,data:M.map(()=>avg),borderColor:C.gold,borderDash:[5,4],borderWidth:1.6,pointRadius:0}]},
+    options:opt({stacked:true})});
+  const best=M.reduce((a,o)=>o.saved>a.saved?o:a,M[0]||{saved:0,k:''});
+  $('xs-md').textContent=M.length?`${R.sel?`${R.label}: ${money0((M.find(o=>o.k===R.sel)||{saved:0}).saved)} saved. `:''}Average ${money0(avg)} a month${best&&best.k?`, best ${lbl(best.k)} at ${money0(best.saved)}`:''}.${R.months.includes('2026-01')?` January 2026 shows its real saving of ${money0(jan26())}.`:''}`:'';
+}
+$('xs-per').onchange=e=>{XS=e.target.value;renderTop();};
 function renderScore(){
+  try{renderTop();}catch(e){console.error(e);}
   const rows=getFilteredData();if(!allData.length||!rows.length)return;
   JF=janF();
   const opts=scOptions(rows);if(!opts.length)return;
@@ -906,7 +999,7 @@ function renderScore(){
   $('x-ytd-title').textContent=`Year to date, ${y}`;
   $('x-ytd-table').tHead.innerHTML=`<tr><th>Since 1 January</th><th class="r">${y}</th><th class="r">${y-1}</th><th class="r">YoY</th></tr>`;
   $('x-ytd-table').tBodies[0].innerHTML=M.map(([l,k])=>`<tr><td><strong>${l}</strong></td><td class="num cur">${money0(Y0[k])}</td><td class="num">${hasYL?money0(YL[k]):'—'}</td>${dcell(Y0[k],YL[k],hasYL)}</tr>`).join('');
-  let note=`Follows the filter above. ${lab} compares with the ${unit} before, YoY with the same ${unit} a year earlier, and year to date with the same stretch of last year. Saved, Guy added, Lea added and Gold bought are what went in during the period, so the opening balance never inflates them. Gold is counted at what you paid.`;
+  let note=`Follows the filter above. ${lab} compares with the ${unit} before, YoY with the same ${unit} a year earlier, and year to date with the same stretch of last year. Saved, Guy added, Lea added and Gold bought are what went in during the period, so the opening balance never inflates them. Balance counts gold at market; the other rows count it at what you paid.`;
   if(!hasLy)note+=` There is no ${ly.l} in the ledger, so YoY shows n/a until a year of data exists.`;
   if(C0.touchesJan||P0.touchesJan||L0.touchesJan||Y0.touchesJan||YL.touchesJan)note+=` January 2026 counts as ${money0(jan26())}, your real saving that month, not the earlier savings it also held (change it in Data).`;
   if(currentFilter==='all'&&typeof pathFor==='function'){
@@ -1034,15 +1127,15 @@ const XV=[
  {id:'balance',src:'ours',grp:'ours',title:'Balance month by month',desc:'Where the balance ended each month, how much it moved, and the change in %.',years:'all',
   build(x){
    const ks=x.ks,t=x.t;
-   const rows=[...ks].reverse().map(k=>{const i=t.keys.indexOf(k),pb=i>0?t.cumulative[t.keys[i-1]]:null,b=t.cumulative[k],ch=t.comp[k].delta;
+   const rows=[...ks].reverse().map(k=>{const i=t.keys.indexOf(k),pb=i>0?t.cumulative[t.keys[i-1]]:null,b=t.cumulative[k],ch=b-(pb||0);
      return {k,cells:[kC(k),mC(b),sC(ch),pC(pb!=null&&pb>0?ch/pb:null),pC(yoyYtd(t,k))]};});
    const a=ks[0],z=ks[ks.length-1],i0=t.keys.indexOf(a),start=i0>0?t.cumulative[t.keys[i0-1]]:0,end=t.cumulative[z];
    return {cols:['Month','Balance','Change','Change %','Saved YoY'],rows,
     insight:`The balance went from <b>${money0(start)}</b> to <b>${money0(end)}</b>${x.year?` in ${x.year}`:''}, ${signed0(end-start)}.`,
-    note:'Balance counts gold at what you paid, like the targets. Change % is the move on the balance at the start of the month. Saved YoY compares what you saved from January to that month with the same months last year.'+janNote(ks),
+    note:'Balance counts gold at that month’s market price, so Change includes what the gold price did. Change % is the move on the balance at the start of the month. Saved YoY compares what you saved from January to that month with the same months last year.'+janNote(ks),
     chart:{type:'bar',data:{labels:ks.map(lbl),datasets:[
       {type:'line',label:'Balance',data:ks.map(k=>t.cumulative[k]),borderColor:C.cash,backgroundColor:'rgba(47,93,138,0.10)',fill:true,tension:.3,borderWidth:2.4,pointRadius:2,yAxisID:'y'},
-      {label:'Change',data:ks.map(k=>t.comp[k].delta),backgroundColor:ks.map(k=>t.comp[k].delta>=0?'rgba(46,125,91,.55)':'rgba(176,67,58,.6)'),yAxisID:'y1'}]},options:opt({y1:true})}};
+      {label:'Change',data:ks.map(k=>{const i=t.keys.indexOf(k);return t.cumulative[k]-(i>0?t.cumulative[t.keys[i-1]]:0);}),backgroundColor:ks.map(k=>{const i=t.keys.indexOf(k);return t.cumulative[k]-(i>0?t.cumulative[t.keys[i-1]]:0);}).map(v=>v>=0?'rgba(46,125,91,.55)':'rgba(176,67,58,.6)'),yAxisID:'y1'}]},options:opt({y1:true})}};
   }},
  {id:'yoy',src:'ours',grp:'ours',title:'This year vs last year',desc:'Each month and the year to date, against the same months of the year before.',years:'one',
   build(x){
@@ -1096,17 +1189,18 @@ const XV=[
    const t=x.t,jf=x.jf,Y={};
    t.keys.forEach(k=>{const y=k.slice(0,4),c=t.comp[k],o=Y[y]||(Y[y]={g:0,l:0,lo:0,s:0,raw:0,last:k,first:k});const f=jf(k);
      o.g+=c.guyTotal*f;o.l+=c.leaTotal*f;o.lo+=c.loan;o.s+=c.delta*f;o.raw+=c.delta;o.last=k;});
-   const ys=Object.keys(Y).sort();let open=0;const list=ys.map(y=>{const o=Y[y],close=t.cumulative[o.last],r={y,open,brought:o.raw-o.s,...o,close};open=close;return r;});
+   const ys=Object.keys(Y).sort();let open=0;const list=ys.map(y=>{const o=Y[y],close=t.cumulative[o.last],brought=o.raw-o.s,r={y,open,brought,...o,close,gp:close-open-brought-o.s};open=close;return r;});
    const rows=[...list].reverse().map((r,i,arr)=>{const p=list.find(z=>+z.y===+r.y-1);
-     return {y:r.y,cells:[cell(`<strong>${r.y}</strong>`,+r.y),mC(r.open),r.brought?mC(r.brought):cell('—','','num'),mC(r.g),mC(r.l),r.lo?sC(r.lo):cell('—','','num'),mC(r.s),mC(r.close),pC(p?pcOf(r.s,p.s):null)]};});
+     return {y:r.y,cells:[cell(`<strong>${r.y}</strong>`,+r.y),mC(r.open),r.brought?mC(r.brought):cell('—','','num'),mC(r.g),mC(r.l),r.lo?sC(r.lo):cell('—','','num'),mC(r.s),Math.abs(r.gp)>0.5?sC(r.gp):cell('—','','num'),mC(r.close),pC(p?pcOf(r.s,p.s):null)]};});
    const last=list[list.length-1];
-   return {cols:['Year','Opening','Brought in','Guy','Lea','Loans','Saved','Closing','Saved YoY'],rows,
+   return {cols:['Year','Opening','Brought in','Guy','Lea','Loans','Saved','Gold price','Closing','Saved YoY'],rows,
     insight:last?`${last.y}: saved <b>${money0(last.s)}</b> so far, closing at <b>${money0(last.close)}</b>.`:'',
-    note:`Opening + brought in + saved = closing. Brought in is the savings you already had when the ledger started (January 2026 minus its real saving of ${money0(jan26())}). Saved YoY compares full years; the current year is only partly done. Tap a year to open it at the top.`,
+    note:`Opening + brought in + saved + gold price = closing. Gold price is what the market did to the gold you hold (closing balances count gold at market). Brought in is the savings you already had when the ledger started (January 2026 minus its real saving of ${money0(jan26())}). Saved YoY compares full years; the current year is only partly done. Tap a year to open it at the top.`,
     chart:{type:'bar',data:{labels:list.map(r=>r.y),datasets:[
       {label:'Brought in',data:list.map(r=>r.brought||0),backgroundColor:'#C9D1D9',stack:'s'},
       {label:'Guy',data:list.map(r=>r.g),backgroundColor:C.cash,stack:'s'},
       {label:'Lea',data:list.map(r=>r.l),backgroundColor:C.lea,stack:'s'},
+      {label:'Gold price',data:list.map(r=>r.gp),backgroundColor:'#E7D3A6',stack:'s'},
       {type:'line',label:'Closing balance',data:list.map(r=>r.close),borderColor:C.ink,borderWidth:2,pointRadius:3}]},options:opt({stacked:true})}};
   }},
  {id:'weeks',src:'ours',grp:'ours',title:'Week by week',desc:'What you saved each week, against the week before and your 4-week average.',years:'all',
