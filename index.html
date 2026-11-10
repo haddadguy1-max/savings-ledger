@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>L&G Savings Ledger</title>
+<title>Savings Ledger</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -224,7 +224,7 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
 <header>
   <div class="header-inner">
     <div class="wordmark">
-      <h1>Lea &amp; Guy</h1>
+      <h1 id="app-title">Savings</h1>
       <span class="sub">Savings Ledger</span>
     </div>
     <div>
@@ -240,7 +240,7 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
   <!-- HERO: GOAL GLIDEPATH -->
   <div class="hero" id="hero" hidden>
     <div class="hero-years" id="hero-years"></div>
-    <div class="eyebrow" id="hero-eyebrow">Target — $30,000 by December 2026</div>
+    <div class="eyebrow" id="hero-eyebrow">Target</div>
     <p class="verdict" id="verdict">—</p>
     <div class="sub-verdict" id="sub-verdict"></div>
     <div class="sub-verdict" id="hero-formula" hidden></div>
@@ -289,11 +289,6 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
   <div class="section" id="filter-section" hidden>
     <div class="filter-chips" id="filter-container">
       <button data-filter="all" class="active">All</button>
-      <button data-filter="guy">Guy</button>
-      <button data-filter="lea">Lea</button>
-      <button data-filter="cash">Cash</button>
-      <button data-filter="gold">Gold</button>
-      <button data-filter="loans">Loans</button>
     </div>
   </div>
 
@@ -306,12 +301,12 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
     <div class="charts-grid">
       <div class="chart-card">
         <div class="title">Contributions by driver</div>
-        <div class="desc">Guy cash · Lea cash · gold purchases · loan movements</div>
+        <div class="desc">each person’s cash · gold purchases · loan movements</div>
         <div class="chart-wrap tall"><canvas id="stacked"></canvas></div>
       </div>
       <div class="chart-card">
         <div class="title">Mix — share of monthly inflows</div>
-        <div class="desc">Guy vs Lea, % of gross contributions (loans excluded)</div>
+        <div class="desc">each person’s share of monthly deposits (loans excluded)</div>
         <div class="chart-wrap tall"><canvas id="mix"></canvas></div>
       </div>
       <div class="chart-card">
@@ -350,7 +345,7 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
       <div class="kpi-card"><div class="kpi-label">Worst month</div><div class="kpi-value red" id="i-worst">—</div><div class="kpi-sub" id="i-worst-sub"></div></div>
       <div class="kpi-card"><div class="kpi-label">Positive months</div><div class="kpi-value" id="i-streak">—</div></div>
       <div class="kpi-card"><div class="kpi-label">Avg deposit size</div><div class="kpi-value" id="i-ticket">—</div><div class="kpi-sub" id="i-ticket-sub"></div></div>
-      <div class="kpi-card"><div class="kpi-label">Guy share</div><div class="kpi-value" id="i-guyshare">—</div></div>
+      <div class="kpi-card"><div class="kpi-label" id="i-share-label">Largest share</div><div class="kpi-value" id="i-guyshare">—</div></div>
       <div class="kpi-card"><div class="kpi-label">Gold allocation</div><div class="kpi-value" id="i-goldalloc">—</div></div>
     </div>
   </div>
@@ -384,21 +379,11 @@ button:focus-visible,.upload-btn:focus-within,select:focus-visible,input:focus-v
     </div>
     <div class="table-container">
       <table id="comparison-table">
-        <thead>
-          <tr>
-            <th>Period</th>
-            <th class="r">Balance</th>
-            <th class="r">Change</th>
-            <th class="r">Change %</th>
-            <th class="r">YoY</th>
-            <th class="r">Guy added</th>
-            <th class="r">Lea added</th>
-          </tr>
-        </thead>
+        <thead><tr><th>Period</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
-    <p class="x-note" style="font-size:12px;color:var(--muted);margin:10px 2px 0;line-height:1.5">Balance is your net savings with gold counted at what you paid, the same basis as the targets and the phased goal. The top card values gold at market. Guy added and Lea added are what each put in during that period, gold included.</p>
+    <p class="x-note" style="font-size:12px;color:var(--muted);margin:10px 2px 0;line-height:1.5">Balance is your net savings with gold at that month’s market price, so Change also shows what the gold price did. Guy added and Lea added are what each put in during that period, gold at what you paid.</p>
   </div>
 
   <!-- TRANSACTIONS -->
@@ -436,8 +421,49 @@ Chart.defaults.plugins.datalabels.display = false;
 const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 if (REDUCED) Chart.defaults.animation = false;
 
-const GOAL = 30000;
-const GOAL_MONTH = '2026-12';
+/* ==================== settings ====================
+   Nothing about who saves, how much, or since when is fixed in the code. People come from the settings, or are
+   read from the names in the entries. The first-year target and the "real saving" of the very first month
+   (which usually also holds the savings brought in) are settings too. */
+const CFGKEY = 'lg-cfg-v1';
+let CFG = {};
+try{ CFG = JSON.parse(localStorage.getItem(CFGKEY) || '{}') || {}; }catch(e){ CFG = {}; }
+function saveCfg(patch){ Object.assign(CFG, patch); try{ localStorage.setItem(CFGKEY, JSON.stringify(CFG)); }catch(e){} _ppl = null; if(window.lgCfgChanged) window.lgCfgChanged(); }
+let dataRev = 0;                                   // bumped whenever entries change, so cached lookups refresh
+const PCOL = ['#2F5D8A','#8A4E7D','#2E7D74','#B5652B','#5B5EA6','#7A8B2E','#A0526B','#3E7CB1'];
+const rgba = (hex,a) => { const n = parseInt(hex.slice(1),16); return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`; };
+const pcol = i => PCOL[i % PCOL.length];
+const isLoanName = n => /loan/i.test(n || '');
+/* the person behind an entry: its name without "loan" and punctuation, lower case */
+const ownerKey = n => String(n || '').toLowerCase().replace(/loan/g,' ').replace(/[^a-z0-9\u00c0-\uffff]+/g,' ').trim();
+const cap = s => String(s).replace(/(^|\s)\S/g, c => c.toUpperCase());
+let _ppl = null, _pplSig = '';
+function people(){
+  const sig = allData.length + '|' + dataRev + '|' + (CFG.people || []).join('\u0001');
+  if(_ppl && sig === _pplSig) return _ppl;
+  const out = [], seen = {};
+  (CFG.people || []).forEach(p => { const k = ownerKey(p); if(k && !seen[k]){ seen[k] = 1; out.push(String(p).trim()); } });
+  [...allData].sort((a,b)=>(a.sortTs||0)-(b.sortTs||0)).forEach(d => { const k = ownerKey(d.name); if(k && !seen[k]){ seen[k] = 1; out.push(cap(k)); } });
+  _ppl = out; _pplSig = sig; _pidx = null;
+  return out;
+}
+let _pidx = null;
+function personIdx(d){
+  const P = people();
+  if(!_pidx){ _pidx = {}; P.forEach((p,i)=>{ _pidx[ownerKey(p)] = i; }); }
+  const i = _pidx[ownerKey(d.name)];
+  return i == null ? -1 : i;
+}
+function firstMonth(){ let f = null; for(const d of allData){ if(d.yyyyMM && (!f || d.yyyyMM < f)) f = d.yyyyMM; } return f; }
+function firstYearAll(){ const f = firstMonth(); return f ? +f.slice(0,4) : new Date().getFullYear(); }
+const goalFirst = () => (CFG.goal > 0 ? +CFG.goal : null);
+/* real saving of the first month, when that month also holds savings brought in; null = no adjustment */
+const startSaving = () => (CFG.startSaving != null && CFG.startSaving !== '' && !isNaN(+CFG.startSaving) ? +CFG.startSaving : null);
+function appTitle(){
+  if(CFG.title) return CFG.title;
+  const P = people();
+  return P.length ? (P.length <= 3 ? P.join(' & ') : `${P[0]} + ${P.length-1}`) : 'Savings';
+}
 
 const C = {
   cash:'#2F5D8A', lea:'#8A4E7D', gold:'#B9892F', debt:'#B0433A',
@@ -481,8 +507,8 @@ function fmtMonthShort(k){ if(!k) return k; const m=+k.split('-')[1]; return (m>
 function quarterOf(k){ const [y,m]=k.split('-'); return `Q${Math.ceil(+m/3)} ${y}`; }
 function monthsBetween(a,b){ const [ya,ma]=a.split('-').map(Number),[yb,mb]=b.split('-').map(Number); return (yb-ya)*12+(mb-ma); }
 function addMonths(k,n){ const [y,m]=k.split('-').map(Number); const d=new Date(y,m-1+n,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
-const money0 = n => '$' + Math.round(n||0).toLocaleString('en-US');
-const money2 = n => '$' + (n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const money0 = n => { const v = Math.round(n||0); return (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString('en-US'); };
+const money2 = n => ((n||0) < 0 ? '−$' : '$') + Math.abs(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const signed0 = n => (n>=0?'+':'−') + '$' + Math.abs(Math.round(n||0)).toLocaleString('en-US');
 
 /* ==================== CSV parser ==================== */
@@ -524,37 +550,47 @@ function parseCSV(text){
 /* ==================== filter ==================== */
 function getFilteredData(){
   if(currentFilter === 'all') return allData;
+  const pm = /^p(\d+)$/.exec(currentFilter);
   return allData.filter(d=>{
-    const n = d.name || '', isLoan = n.includes('loan'), g = d.gold || 0;
-    if(currentFilter==='guy') return n.includes('guy');
-    if(currentFilter==='lea') return n.includes('lea');
+    const isLoan = isLoanName(d.name), g = d.gold || 0;
+    if(pm) return personIdx(d) === +pm[1];
     if(currentFilter==='cash') return !isLoan && g === 0;
     if(currentFilter==='gold') return g > 0;
     if(currentFilter==='loans') return isLoan;
     return true;
   });
 }
+function renderChips(){
+  const P = people();
+  if(/^p\d+$/.test(currentFilter) && +currentFilter.slice(1) >= P.length) currentFilter = 'all';
+  const items = [['all','All'], ...P.map((p,i)=>['p'+i,p]), ['cash','Cash'], ['gold','Gold'], ['loans','Loans']];
+  document.getElementById('filter-container').innerHTML = items.map(([v,l]) =>
+    `<button data-filter="${v}"${v===currentFilter?' class="active"':''}>${String(l).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</button>`).join('');
+  const ttl = appTitle();
+  document.getElementById('app-title').textContent = ttl;
+  document.title = ttl + ' · Savings Ledger';
+}
 
 /* ==================== analytics core ==================== */
 function computeAnalytics(rows){
-  let cash=0, gold=0, goldGrams=0, loan=0, guy=0, lea=0;
+  const P = people(), n = P.length;
+  let cash=0, gold=0, goldGrams=0, loan=0;
   let loanBorrowed=0, loanRepaid=0;
   let depositCount=0, depositSum=0;
-  const comp = {}; // yyyyMM -> {guyCash, leaCash, gold, loan, guyTotal, leaTotal, delta}
+  const pt = new Array(n).fill(0);                 // deposits per person (cash + gold at what was paid), loans left out
+  const comp = {};                                  // yyyy-mm -> {pc[], pt[], oc, gold, loan, delta}
+  const blank = () => ({pc:new Array(n).fill(0), pt:new Array(n).fill(0), oc:0, gold:0, loan:0, delta:0});
 
   rows.forEach(d=>{
     const gVal = (d.gold||0) * (d.goldPrice||0);
     const u = d.usd || 0;
-    const n = d.name || '';
-    const isLoan = n.includes('loan');
-    const m = d.yyyyMM;
-    if(m && !comp[m]) comp[m] = {guyCash:0, leaCash:0, gold:0, loan:0, guyTotal:0, leaTotal:0, delta:0};
+    const isLoan = isLoanName(d.name);
+    const m = d.yyyyMM, i = personIdx(d);
+    if(m && !comp[m]) comp[m] = blank();
 
     if(isLoan){
       loan -= u;
       if(u < 0) loanBorrowed += -u; else loanRepaid += u;
-      if(n.includes('guy')) guy += u;
-      if(n.includes('lea')) lea += u;
       if(m){ comp[m].loan += u; comp[m].delta += u; }
     } else {
       cash += u;
@@ -562,9 +598,8 @@ function computeAnalytics(rows){
       goldGrams += (d.gold||0);
       const total = u + gVal;
       if(total > 0){ depositCount++; depositSum += total; }
-      if(n.includes('guy')){ guy += total; if(m){ comp[m].guyCash += u; comp[m].guyTotal += total; } }
-      else if(n.includes('lea')){ lea += total; if(m){ comp[m].leaCash += u; comp[m].leaTotal += total; } }
-      else if(m){ comp[m].guyCash += u; } // unnamed → bucket with cash driver
+      if(i >= 0){ pt[i] += total; if(m){ comp[m].pc[i] += u; comp[m].pt[i] += total; } }
+      else if(m){ comp[m].oc += u; }                // entry without a name
       if(m){ comp[m].gold += gVal; comp[m].delta += total; }
     }
   });
@@ -574,7 +609,7 @@ function computeAnalytics(rows){
   const cumulative = {};
   keys.forEach(k=>{ cum += comp[k].delta; cumulative[k] = cum; });
 
-  return { cash, gold, goldGrams, loan, guy, lea, loanBorrowed, loanRepaid,
+  return { cash, gold, goldGrams, loan, P, pt, loanBorrowed, loanRepaid,
            depositCount, depositSum, comp, keys, cumulative,
            net: cash + gold - loan };
 }
@@ -597,7 +632,7 @@ function updateKPIs(t){
 
   const pill = document.getElementById('kpi-net-delta');
   if(t.keys.length >= 2){
-    const last = t.comp[t.keys[t.keys.length-1]].delta;
+    const last = t.cumulative[t.keys[t.keys.length-1]] - t.cumulative[t.keys[t.keys.length-2]];
     pill.hidden = false;
     pill.innerText = `${signed0(last)} MoM`;
     pill.className = 'delta-pill ' + (last >= 0 ? 'up' : 'down');
@@ -606,22 +641,21 @@ function updateKPIs(t){
 
 /* ==================== hero glidepath ==================== */
 let heroYear = null;
-const LAST_YEAR = 2030;
 const fmtK = v => v >= 1000 ? '$' + (v/1000).toFixed(v >= 10000 ? 0 : 1).replace(/\.0$/,'') + 'k' : money0(v);
 const pad2 = n => String(n).padStart(2,'0');
 const pctS = x => (x>=0?'+':'−') + Math.abs(x*100).toFixed(1) + '%';
 const ratio = (a,b) => (b != null && b > 0) ? a/b - 1 : null;
-/* YoY works on what was saved inside the year, so the opening balance never inflates it, and it follows
-   the active filter (Guy against Guy, Lea against Lea). January 2026 held the savings from before, so its
-   real saving is a setting (default $800), scaled to the filter in use. */
-function jan26(){ try{ const v = parseFloat(localStorage.getItem('lg-jan26-v1')); return isNaN(v) ? 800 : v; }catch(e){ return 800; } }
+/* YoY works on what was saved inside the year, so the opening balance never inflates it, and it follows the
+   active filter (each person against themselves). The ledger's first month usually also holds the savings
+   brought in; when a "real saving" is set for it, that month's flows are scaled down to it. */
+function startFactor(){
+  const s = startSaving(), fmk = firstMonth(); if(s == null || !fmk) return 1;
+  const all = computeAnalytics(allData).comp[fmk];
+  return (all && all.delta) ? s / all.delta : 1;
+}
 function deltaOf(t,k){
   const c = t.comp[k]; if(!c) return 0;
-  if(k === '2026-01'){
-    const all = computeAnalytics(allData).comp['2026-01'];
-    if(all && all.delta) return c.delta * (jan26() / all.delta);
-  }
-  return c.delta;
+  return k === firstMonth() ? c.delta * startFactor() : c.delta;
 }
 function ytd(t,Y,mi){ let s = 0; for(let m=1;m<=mi;m++) s += deltaOf(t, `${Y}-${pad2(m)}`); return s; }
 function hasYear(t,Y){ return t.keys.some(k=>k.startsWith(Y+'-')); }
@@ -635,18 +669,19 @@ function goalRatio(Y,path,t,k,current){
 }
 function cumAt(t,k){ let v=0; for(const kk of t.keys){ if(kk<=k) v=t.cumulative[kk]; else break; } return v; }
 function yearsAvail(t){
-  const first = +t.keys[0].slice(0,4);
-  const last = Math.max(LAST_YEAR, +t.keys[t.keys.length-1].slice(0,4));
+  const first = +t.keys[0].slice(0,4), cy = new Date().getFullYear();
+  const last = Math.max(firstYearAll() + 4, cy + 2, +t.keys[t.keys.length-1].slice(0,4));
   const ys = []; for(let y=first;y<=last;y++) ys.push(y); return ys;
 }
-/* 2026: fixed $30k. Every later year: average monthly saving of the previous year x 12 x 1.2, plus that year's
-   closing balance. January 2026 is left out of the average because it holds the savings from before.
-   A year whose previous year has no data yet has no target ("pending"). */
+/* First year: the target you set. Every later year: average monthly saving of the previous year x 12 x 1.2, plus
+   that year's closing balance. The ledger's first month is left out of the average when it holds savings
+   brought in. A year whose previous year has no data yet has no target ("pending"). */
 function targetFor(Y,t){
-  if(Y <= 2026) return {goal:GOAL};
+  const FY = firstYearAll();
+  if(Y <= FY){ const g = goalFirst(); return g ? {goal:g} : {unset:true}; }
   const P = Y-1;
   let ks = t.keys.filter(k=>k.startsWith(P+'-'));
-  if(P === 2026) ks = ks.filter(k=>k !== '2026-01');
+  if(P === FY && startSaving() != null) ks = ks.filter(k=>k !== firstMonth());
   if(!ks.length) return {pending:true, P};
   const avg = ks.reduce((s,k)=>s+t.comp[k].delta,0)/ks.length;
   const closing = cumAt(t, `${P}-12`);
@@ -655,7 +690,7 @@ function targetFor(Y,t){
 /* Phased goal: a straight line from where the year starts to its target. */
 function pathFor(Y,t){
   const tg = targetFor(Y,t);
-  if(tg.pending) return null;
+  if(tg.pending || tg.unset) return null;
   const firstYear = +t.keys[0].slice(0,4);
   const firstKey = Y === firstYear ? t.keys[0] : `${Y-1}-12`;
   const firstVal = Y === firstYear ? t.cumulative[t.keys[0]] : cumAt(t, `${Y-1}-12`);
@@ -686,7 +721,7 @@ function updateHero(t){
     if(charts.glide){ charts.glide.destroy(); charts.glide = null; }
     showParts(false);
     el('hero-eyebrow').innerText = `Target for ${Y}`;
-    el('verdict').innerHTML = `The ${Y} target is set from ${P}’s savings once ${P} has data.`;
+    el('verdict').innerHTML = targetFor(Y,t).unset ? `Set your ${Y} target in <em>Data</em> to see your path.` : `The ${Y} target is set from ${P}’s savings once ${P} has data.`;
     el('sub-verdict').innerText = '';
     el('hero-formula').hidden = true;
     tiles('—','','—','','—','');
@@ -729,7 +764,7 @@ function updateHero(t){
     const yoy = sP == null ? null : ratio(sY, sP);
     const vsg = filt ? null : goalRatio(Y,path,t,refKey,current);
     tiles(money0(current),
-          Y > firstYear ? `${money0(sY)} of it saved in ${Y}` : 'balance since the start',
+          Y > firstYear ? `${money0(sY)} saved in ${Y} · gold at today's price` : 'gold at today’s price',
           yoy == null ? '—' : pctS(yoy),
           sP == null ? 'No earlier year to compare yet' : `${money0(sY)} saved vs ${money0(sP)} by ${MONTHS_S[mi-1]} ${P}`,
           vsg == null ? '—' : pctS(vsg),
@@ -755,9 +790,9 @@ function updateHero(t){
   el('sub-verdict').innerText = sub;
 
   const fm = el('hero-formula');
-  if(Y > 2026){
+  if(Y > firstYearAll()){
     fm.hidden = false;
-    fm.innerText = `Target = average monthly saving in ${P}${P===2026?' (January left out)':''}, ${money0(tg.avg)}, × 12 × 1.2, plus the ${P} closing balance of ${money0(tg.closing)}.${tg.prov?` Provisional until ${P} closes.`:''}`;
+    fm.innerText = `Target = average monthly saving in ${P}${(P===firstYearAll() && startSaving()!=null)?` (${MONTHS_F[+firstMonth().slice(5)-1]} left out)`:''}, ${money0(tg.avg)}, × 12 × 1.2, plus the ${P} closing balance of ${money0(tg.closing)}.${tg.prov?` Provisional until ${P} closes.`:''}`;
   } else fm.hidden = true;
 
   el('hero-eyebrow').innerText = `Target — ${money0(goal)} by December ${Y}`;
@@ -810,14 +845,17 @@ function updateHero(t){
 }
 
 /* ==================== charts ==================== */
+function activeP(t){
+  const idx = t.P.map((_,i)=>i).filter(i => t.keys.some(k => Math.abs(t.comp[k].pt[i]) > 0.005 || Math.abs(t.comp[k].pc[i]) > 0.005));
+  return idx.length ? idx : t.P.map((_,i)=>i);
+}
 function drawStacked(t){
   if(charts.stacked) charts.stacked.destroy();
   const labels = t.keys.map(fmtMonthShort);
   charts.stacked = new Chart(document.getElementById('stacked'),{
     type:'bar',
     data:{ labels, datasets:[
-      {label:'Guy — cash', data:t.keys.map(k=>t.comp[k].guyCash), backgroundColor:C.cash, stack:'s', borderRadius:3},
-      {label:'Lea — cash', data:t.keys.map(k=>t.comp[k].leaCash), backgroundColor:C.lea, stack:'s', borderRadius:3},
+      ...activeP(t).map(i=>({label:`${t.P[i]} — cash`, data:t.keys.map(k=>t.comp[k].pc[i]), backgroundColor:pcol(i), stack:'s', borderRadius:3})),
       {label:'Gold', data:t.keys.map(k=>t.comp[k].gold), backgroundColor:C.gold, stack:'s', borderRadius:3},
       {label:'Loans', data:t.keys.map(k=>t.comp[k].loan), backgroundColor:C.debt, stack:'s', borderRadius:3}
     ]},
@@ -842,19 +880,15 @@ function drawStacked(t){
 function drawMix(t){
   if(charts.mix) charts.mix.destroy();
   const labels = t.keys.map(fmtMonthShort);
-  const guyPct = [], leaPct = [];
+  const ip = activeP(t);
+  const pct = ip.map(()=>[]);
   t.keys.forEach(k=>{
-    const g = Math.max(0, t.comp[k].guyTotal), l = Math.max(0, t.comp[k].leaTotal);
-    const tot = g + l;
-    guyPct.push(tot > 0 ? g/tot*100 : 0);
-    leaPct.push(tot > 0 ? l/tot*100 : 0);
+    const v = ip.map(i=>Math.max(0, t.comp[k].pt[i])), tot = v.reduce((s,x)=>s+x,0);
+    v.forEach((x,j)=>pct[j].push(tot > 0 ? x/tot*100 : 0));
   });
   charts.mix = new Chart(document.getElementById('mix'),{
     type:'bar',
-    data:{ labels, datasets:[
-      {label:'Guy', data:guyPct, backgroundColor:C.cash, stack:'m', borderRadius:3},
-      {label:'Lea', data:leaPct, backgroundColor:C.lea, stack:'m', borderRadius:3}
-    ]},
+    data:{ labels, datasets: ip.map((i,j)=>({label:t.P[i], data:pct[j], backgroundColor:pcol(i), stack:'m', borderRadius:3})) },
     options:{
       responsive:true, maintainAspectRatio:false,
       scales:{
@@ -903,19 +937,11 @@ function drawSplit(t){
 function drawPeople(t){
   if(charts.people) charts.people.destroy();
   const labels = t.keys.map(fmtMonthShort);
-  let g = 0, l = 0;
-  const guySeries = [], leaSeries = [];
-  t.keys.forEach(k=>{
-    g += t.comp[k].guyTotal;
-    l += t.comp[k].leaTotal;
-    guySeries.push(g); leaSeries.push(l);
-  });
+  const ip = activeP(t);
+  const series = ip.map(i=>{ let s = 0; return t.keys.map(k=>(s += t.comp[k].pt[i])); });
   charts.people = new Chart(document.getElementById('people'),{
     type:'line',
-    data:{ labels, datasets:[
-      {label:'Guy', data:guySeries, borderColor:C.cash, backgroundColor:'rgba(47,93,138,0.08)', fill:true, tension:0.3, borderWidth:2.2, pointRadius:2.5},
-      {label:'Lea', data:leaSeries, borderColor:C.lea, backgroundColor:'rgba(138,78,125,0.08)', fill:true, tension:0.3, borderWidth:2.2, pointRadius:2.5}
-    ]},
+    data:{ labels, datasets: ip.map((i,j)=>({label:t.P[i], data:series[j], borderColor:pcol(i), backgroundColor:rgba(pcol(i),0.08), fill:true, tension:0.3, borderWidth:2.2, pointRadius:2.5})) },
     options:{
       responsive:true, maintainAspectRatio:false,
       scales:{
@@ -954,11 +980,13 @@ function drawBridge(t){
   const idx = t.keys.indexOf(k);
   const start = idx > 0 ? t.cumulative[t.keys[idx-1]] : 0;
   const c = t.comp[k];
+  const px = (t.cumulative[k] - start) - c.delta;       // what the gold price did to the gold already held
   const steps = [
-    {label:'Guy cash', val:c.guyCash, color:C.cash},
-    {label:'Lea cash', val:c.leaCash, color:C.lea},
-    {label:'Gold', val:c.gold, color:C.gold},
-    {label:'Loans', val:c.loan, color:C.debt}
+    ...activeP(t).map(i=>({label:`${t.P[i]} cash`, val:c.pc[i], color:pcol(i)})),
+    ...(Math.abs(c.oc) > 0.5 ? [{label:'Other cash', val:c.oc, color:'#69737F'}] : []),
+    {label:'Gold bought', val:c.gold, color:C.gold},
+    {label:'Loans', val:c.loan, color:C.debt},
+    ...(Math.abs(px) > 0.5 ? [{label:'Gold price', val:px, color:'#D8B25C'}] : [])
   ];
   const bars = [[0, start]];
   const colors = ['#9AA6B1'];
@@ -1010,7 +1038,7 @@ function drawBridge(t){
 
 /* ==================== insights ==================== */
 function updateInsights(t){
-  const deltas = t.keys.map(k=>deltaOf(t,k));   /* January 2026 at its real saving, not the savings brought in */
+  const deltas = t.keys.map(k=>deltaOf(t,k));   /* the first month at its real saving, not the savings brought in */
   const set = (id,v)=>document.getElementById(id).innerText = v;
   if(!deltas.length){
     ['i-avg','i-median','i-best','i-worst','i-streak','i-ticket','i-guyshare','i-goldalloc'].forEach(id=>set(id,'—'));
@@ -1033,9 +1061,10 @@ function updateInsights(t){
   set('i-streak', `${posMonths} / ${deltas.length}`);
   set('i-ticket', t.depositCount ? money0(t.depositSum/t.depositCount) : '—');
   set('i-ticket-sub', `${t.depositCount} deposits`);
-  let gG=0, lL=0; t.keys.forEach(k=>{ gG += t.comp[k].guyTotal; lL += t.comp[k].leaTotal; });   /* deposits only, loans left out */
-  const gross = gG + lL;
-  set('i-guyshare', gross > 0 ? (gG/gross*100).toFixed(0) + '%' : '—');
+  const gross = t.pt.reduce((s,x)=>s+Math.max(0,x),0);   /* deposits only, loans left out */
+  let top = 0; t.pt.forEach((x,i)=>{ if(x > t.pt[top]) top = i; });
+  set('i-share-label', t.P.length ? `${t.P[top]} share` : 'Largest share');
+  set('i-guyshare', gross > 0 ? (Math.max(0,t.pt[top])/gross*100).toFixed(0) + '%' : '—');
   const assets = t.cash + t.gold;
   set('i-goldalloc', assets > 0 ? (t.gold/assets*100).toFixed(0) + '%' : '—');
 }
@@ -1044,9 +1073,11 @@ function updateInsights(t){
 function updateComparisonTable(t){
   const tbody = document.querySelector('#comparison-table tbody');
   tbody.innerHTML = '';
-  const keys = t.keys;
+  const keys = t.keys, ip = activeP(t);
+  document.querySelector('#comparison-table thead').innerHTML = '<tr><th>Period</th><th class="r">Balance</th><th class="r">Change</th><th class="r">Change %</th><th class="r">YoY</th>'
+    + ip.map(i=>`<th class="r">${String(t.P[i]).replace(/[&<>]/g,'')} added</th>`).join('') + '</tr>';
   if(keys.length < 1){
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-note">Not enough data yet</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="empty-note">Not enough data yet</td></tr>`;
     return;
   }
   let rows = [];
@@ -1060,7 +1091,7 @@ function updateComparisonTable(t){
         ord: i, period: fmtMonthFull(k), value: curr, change,
         pct: prev !== 0 ? change/prev*100 : null,
         yoy: yoyYtd(t,k),
-        guy: t.comp[k].guyTotal, lea: t.comp[k].leaTotal
+        add: ip.map(i=>t.comp[k].pt[i])
       });
     });
   } else {
@@ -1068,10 +1099,9 @@ function updateComparisonTable(t){
     const qorder = [];
     keys.forEach(k=>{
       const q = quarterOf(k);
-      if(!qmap[q]){ qmap[q] = {last:0, guy:0, lea:0}; qorder.push(q); }
+      if(!qmap[q]){ qmap[q] = {last:0, add:ip.map(()=>0)}; qorder.push(q); }
       qmap[q].last = t.cumulative[k]; qmap[q].lastKey = k;
-      qmap[q].guy += t.comp[k].guyTotal;
-      qmap[q].lea += t.comp[k].leaTotal;
+      ip.forEach((i,j)=>{ qmap[q].add[j] += t.comp[k].pt[i]; });
     });
     qorder.forEach((q,i)=>{
       const prev = i > 0 ? qmap[qorder[i-1]].last : 0;
@@ -1082,7 +1112,7 @@ function updateComparisonTable(t){
         ord: i, period: q, value: curr, change,
         pct: prev !== 0 ? change/prev*100 : null,
         yoy: qmap[pq] ? yoyYtd(t, qmap[q].lastKey) : null,
-        guy: qmap[q].guy, lea: qmap[q].lea
+        add: qmap[q].add
       });
     });
   }
@@ -1096,8 +1126,7 @@ function updateComparisonTable(t){
       <td class="num ${cls}">${signed0(r.change)}</td>
       <td class="num ${cls}">${r.pct == null ? '—' : (r.pct>=0?'+':'−') + Math.abs(r.pct).toFixed(1) + '%'}</td>
       <td class="num ${r.yoy==null?'':(r.yoy>=0?'pos':'neg')}">${r.yoy == null ? '—' : pctS(r.yoy)}</td>
-      <td class="num">${money0(r.guy)}</td>
-      <td class="num">${money0(r.lea)}</td>`;
+` + r.add.map(v=>`<td class="num">${money0(v)}</td>`).join('');
     tbody.appendChild(tr);
   });
 }
@@ -1234,6 +1263,7 @@ function renderAll(){
   });
   document.getElementById('tx-search').hidden = false;
 
+  renderChips();
   const filtered = getFilteredData();
   const t = computeAnalytics(filtered);
 

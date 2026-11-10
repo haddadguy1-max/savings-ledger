@@ -1,4 +1,4 @@
-const V='lg-ledger-v13';
+const V='lg-ledger-v14';
 const CORE=['./','index.html','app-extras.js','manifest.json','icon-180.png','icon-192.png','icon-512.png'];
 const CDN=[
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
@@ -8,7 +8,7 @@ const CDN=[
 self.addEventListener('install',e=>{
   self.skipWaiting();
   e.waitUntil(caches.open(V).then(async c=>{
-    await c.addAll(CORE);
+    await c.addAll(CORE.map(u=>new Request(u,{cache:'reload'})));   // always the fresh files, never a stale browser copy
     await Promise.allSettled(CDN.map(u=>fetch(u).then(r=>r.ok&&c.put(u,r))));
   }));
 });
