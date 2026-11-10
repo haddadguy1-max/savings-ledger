@@ -1,5 +1,5 @@
-const V='lg-ledger-v14';
-const CORE=['./','index.html','app-extras.js','manifest.json','icon-180.png','icon-192.png','icon-512.png'];
+const V='lg-ledger-v15-google';
+const CORE=['./','index.html','app-extras.js','google-drive.js','google-drive.js','manifest.json','icon-180.png','icon-192.png','icon-512.png'];
 const CDN=[
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
   'https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2/dist/chartjs-plugin-datalabels.min.js',

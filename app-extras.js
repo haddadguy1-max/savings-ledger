@@ -415,17 +415,46 @@ $('x-data').insertAdjacentHTML('beforebegin',`<div class="section" id="x-sync"><
  <label class="x-label" for="x-sync-url">Ledger login</label><input id="x-sync-url" class="x-input" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Your ledger login">
  <label class="x-label" for="x-sync-token">Password</label><input id="x-sync-token" type="password" class="x-input" autocomplete="current-password" autocapitalize="off">
  <div class="x-btns"><button type="button" id="x-sync-connect">Sign in</button><button type="button" id="x-sync-invite">Invite someone</button><button type="button" id="x-sync-now">Sync now</button><button type="button" id="x-sync-off" class="danger">Sign out</button></div></div></div>`);
+$('x-sync').querySelector('.kpi-card').insertAdjacentHTML('afterbegin',`<div style="margin-bottom:16px"><button type="button" id="x-google-login" class="x-primary" style="width:100%">Sign in with Google · My Drive</button><p class="x-note" id="x-google-info">Your own Google Sheet is created automatically. No Apps Script required. On iPhone, sign in through Safari if the home-screen app blocks Google login.</p></div>`);
+$('x-google-login').onclick=async()=>{
+  try{
+    if(!window.LGGoogle)throw Error('Google integration not loaded');
+    // Google OAuth must be initiated directly from the user gesture.
+    const result=await LGGoogle.login();
+    // Keep legacy data intact. Google accounts have isolated local snapshots.
+    const oldId=localStorage.getItem('lg-google-sheet-id');
+    const currentId=result.spreadsheetId;
+    const keys=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-gold-history-v1'];
+    if(oldId!==currentId){
+      const legacy=localStorage.getItem('lg-google-legacy-snapshot-v1');
+      if(!legacy){
+        const snapshot={};keys.forEach(k=>snapshot[k]=localStorage.getItem(k));
+        localStorage.setItem('lg-google-legacy-snapshot-v1',JSON.stringify(snapshot));
+      }
+      const saved=JSON.parse(localStorage.getItem('lg-google-account-'+currentId)||'{}');
+      keys.forEach(k=>saved[k]==null?localStorage.removeItem(k):localStorage.setItem(k,saved[k]));
+      localStorage.setItem('lg-google-sheet-id',currentId);
+      CFG=JSON.parse(localStorage.getItem('lg-cfg-v1')||'{}');_ppl=null;
+      allData=loadSaved();tomb=JSON.parse(localStorage.getItem(TOMB)||'{}');
+      lastSig={};allData.forEach(r=>lastSig[r.id]=sig(r));ver++;
+      if(!Object.keys(saved).length){localStorage.removeItem('lg-shu-v1');localStorage.removeItem('lg-shs-v1');}
+    }
+    $('x-google-info').textContent='Connected: '+result.email+' · Google Sheet '+result.spreadsheetId;
+    $('x-google-login').textContent='Reconnect Google account';
+    await sync({manual:true,adopt:true});
+  }catch(e){toast(e.message||'Google sign-in failed');}
+};
 /* the login is the ledger's ID, a full link also works; both end up as the same address */
 const toUrl=v=>{v=String(v||'').trim();if(/^https:\/\/script\.google\.com\/\S+/.test(v))return v;return /^[A-Za-z0-9_-]{20,}$/.test(v)?'https://script.google.com/macros/s/'+v+'/exec':'';};
 const toLogin=u=>{const m=/\/macros\/s\/([^/]+)/.exec(u||'');return m?m[1]:(u||'');};
-const cfg=()=>{try{return JSON.parse(localStorage.getItem(SYNC)||'null');}catch(e){return null;}};
+const cfg=()=>{if(window.LGGoogle?.active())return {mode:'google'};try{return JSON.parse(localStorage.getItem(SYNC)||'null');}catch(e){return null;}};
 const isTrue=v=>v===true||v===1||String(v).toLowerCase()==='true';
 function setSyncState(t){syncState=t;const el=$('x-sync-status');if(el)el.textContent=t;status();}
 function scheduleSync(){if(!cfg())return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>sync({quiet:true}),1500);}
 function busy(){const a=document.activeElement;return !$('x-sheet').hidden||!!(a&&a.classList&&a.classList.contains('x-cell'));}
 function errText(e){return e.message==='unauthorized'?'Wrong password.':e.message==='bad-reply'?'Could not sign in. Check the ledger login.':'Offline. Changes are saved here and will sync later.';}
 async function api(method,body){
-  const c=cfg();let r,j;
+  const c=cfg();if(c?.mode==='google')return method==='GET'?LGGoogle.get():LGGoogle.post(body||{});let r,j;
   try{
     r=await fetch(method==='GET'?`${c.url}${c.url.includes('?')?'&':'?'}token=${encodeURIComponent(c.token)}`:c.url,
       method==='GET'?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(Object.assign({token:c.token},body))});
@@ -481,13 +510,26 @@ $('x-sync-connect').onclick=async()=>{
   await sync({manual:true,adopt});
 };
 $('x-sync-invite').onclick=async()=>{
-  const c=cfg();if(!c){toast('Sign in first.');return;}
+  const c=cfg();if(!c){toast('Sign in first.');return;}if(c.mode==='google'){toast('To share a Google ledger, use Google Drive sharing. Each collaborator needs Google access.');return;}
   const link=location.origin+location.pathname+'#join='+btoa(unescape(encodeURIComponent(JSON.stringify({u:c.url,t:c.token}))));
   try{await navigator.clipboard.writeText(link);toast('Invite copied. Send it privately: anyone with it signs in and can edit the ledger.');}
   catch(e){prompt('Copy this invite and send it privately:',link);}
 };
 $('x-sync-now').onclick=()=>{if(!cfg()){toast('Sign in first.');return;}sync({manual:true});};
-$('x-sync-off').onclick=()=>{localStorage.removeItem(SYNC);$('x-sync-token').value='';setSyncState('');status();toast('Signed out. Your entries stay on this phone.');};
+$('x-sync-off').onclick=()=>{
+  if(window.LGGoogle?.active()){
+    const id=LGGoogle.spreadsheetId,keys=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-gold-history-v1'];
+    const snap={};keys.forEach(k=>snap[k]=localStorage.getItem(k));
+    localStorage.setItem('lg-google-account-'+id,JSON.stringify(snap));
+    const legacy=JSON.parse(localStorage.getItem('lg-google-legacy-snapshot-v1')||'{}');
+    keys.forEach(k=>legacy[k]==null?localStorage.removeItem(k):localStorage.setItem(k,legacy[k]));
+    localStorage.removeItem('lg-google-sheet-id');LGGoogle.signout();
+    CFG=JSON.parse(localStorage.getItem('lg-cfg-v1')||'{}');_ppl=null;
+    allData=loadSaved();tomb=JSON.parse(localStorage.getItem(TOMB)||'{}');
+    lastSig={};allData.forEach(r=>lastSig[r.id]=sig(r));renderAll();
+  } else localStorage.removeItem(SYNC);
+  $('x-sync-token').value='';setSyncState('');status();toast('Signed out.');
+};
 setInterval(()=>{if(cfg()&&!document.hidden)sync({quiet:true});},45000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cfg())sync({quiet:true});});
 window.addEventListener('online',()=>{if(cfg())sync({quiet:true});});
@@ -815,7 +857,8 @@ function shStamp(){
 function shMerge(reply){
   if(!reply||typeof reply.settings!=='object'||!reply.settings){shared.ok=false;return null;}
   shared.ok=true;shared.backupAt=+reply.backupAt||0;
-  shStamp();
+  // On first Google connection, remote settings must win over device defaults.
+  if(!(window.LGGoogle?.active() && !Object.keys(jget(SHU)).length))shStamp();
   const u=jget(SHU),s=jget(SHS),R=reply.settings,out={};let applied=false;
   Object.keys(SH).forEach(k=>{
     const r=R[k],lu=+u[k]||0,ru=r?(+r.u||0):0;
