@@ -1,33 +1,22 @@
-# Savings Ledger v23 — daily gold price and calculation review
+# Savings Ledger v24 — Settings sync and report data integrity
 
-**TEST BUILD — DO NOT REPLACE LIVE FINANCIAL DATA WITHOUT BACKUP.**
+## Changes
+- Shared settings include all `CFG` Data tab values, target, starting balance, contributors, gold valuation settings, and observed gold price history.
+- Gold setting edits now request a sync, rather than remaining device-local.
+- On a new ledger with no remote settings, local values are seeded. On an existing ledger, remote timestamps are respected.
+- Report and detailed PDF use the same reportData model; missing monthly market quotes are explicitly shown as gaps, not replaced by purchase prices or a later month.
+- One-page PDF no longer substitutes cost basis for missing market valuation; missing net worth is labeled unavailable.
+- Data quality notes explain historical monthly averages versus month-end closes.
+- New Home Screen icons included.
 
-## Implemented
-- Live 24K gold USD/troy-ounce quote requested from `https://api.gold-api.com/price/XAU` and converted to USD/gram using 31.1034768 grams/troy ounce; each lot is scaled by its recorded karat/24.
-- On opening the app, a live quote is requested if the last successful live quote is older than 24 hours; the app retries while open and on visibility changes. Refresh button forces a new request. This is **not** a background daily job while the app is closed.
-- Rejects failed HTTP responses and implausible/non-numeric quote values. Concurrent refreshes are deduplicated. No stale fallback is labeled live. Cached prices are not used as *today's* market quote after 24 hours.
-- Keeps gold acquisition cost separate from market price. Missing historical prices are not filled with purchase costs, interpolated, or carried forward on the price chart.
-- When no current quote is available, gold holdings panel shows **Price unavailable**, and unrealized gain is hidden rather than invented. The ledger's older cost-basis balance calculation is still used as a fallback and must not be interpreted as verified market value.
-- Service-worker cache bumped so browsers receive updated code.
+## Deployment warning
+**This is a test build.** Back up the Google Sheet and the previous app before uploading. Google sign-in still requires your OAuth Client ID. The historical gold provider may not supply all requested months, and this build does not invent missing quotes. True multi-device simultaneous-edit atomicity is not guaranteed by Google Sheets API; do not edit the same setting simultaneously. The existing cash/gold transfer accounting and loan accounting require transaction migration and remain unresolved.
 
-## Tests completed
-- `node --check app-extras.js` and `node --check google-drive.js` passed.
-- `node test_calculations.js` passed (cost basis, spot valuation, mixed purity, missing prices, stale price, manual override, history).
-- ZIP integrity verified.
-
-## NOT verified / remaining accounting blockers
-1. **Existing gold purchase entries do not specify their funding source.** Gold paid using existing recorded cash requires a matching cash reduction; gold bought using external funds does not. Historical funding cannot be guessed or safely backfilled. The current app does not implement atomic cash-to-gold transfers. Net worth and monthly contributions may be overstated without proper offsetting entries.
-2. **Loans are not full double-entry transactions**. Principal disbursement/repayment needs paired cash and liability changes. Historical loans need reconciliation.
-3. **Live market API and Google sign-in/sync have not been end-to-end tested against your private ledger or production iPhone.** The gold provider may be down, rate-limited, CORS-blocked, or provide an unexpected format; this is handled as unavailable rather than fabricated.
-4. Gold price history from `freegoldapi.com` is monthly average, not necessarily a month-end closing quote; individual daily historical records are not persisted by this version. Monthly snapshots may be incomplete and manual overrides are not independent verification.
-5. Google OAuth still requires the actual OAuth client ID. Concurrent Google Sheets edits and scheduled push notifications remain unresolved.
-6. Historical gold entries with missing cost or karat need user correction. Legacy reports use mixed savings/net-worth semantics and need transaction-level validation before being treated as audit-grade.
-
-## Recommended safe rollout
-1. Export original ledger and back up GitHub and Google Sheet.
-2. Deploy ZIP to **test repository**, not production.
-3. Confirm live quote and timestamp in iPhone Safari and Home Screen PWA, test offline/expired quotes, and manually verify purchase lots and PDF report.
-4. Reconcile every historical gold purchase's funding source and every loan principal movement before trusting net worth.
-5. Test separate accounts and simultaneous devices before production release.
-
-**No one can responsibly guarantee “no mistakes” without your real transaction history, a working authenticated backend, and end-to-end device tests.**
+## Manual cross-device test
+1. Back up the spreadsheet. Open the same ledger on iPhone and laptop.
+2. Change Data → Target to a unique number; wait for Synced; inspect `Settings` tab (`fullDataConfig` and `goal` rows).
+3. Refresh the other device, confirm target and starting savings match. Repeat with contributors and gold purity/mode.
+4. Edit an existing gold purchase cost and verify the `Raw data` row and report on both devices.
+5. Open October report and export PDF. Both should display the same monthly gold observations and missing-price warnings.
+6. Test switching between two accounts: no shared financial settings should leak.
+7. Test offline edit and re-connection. Do not delete the app until all pending edits have synced.

@@ -551,7 +551,7 @@ const GOLD_REFRESH_MS=24*60*60*1000; // One verified refresh per day while app i
 const goldPriceFresh=g=>g&&g.px>0&&g.via==='live'&&g.at>0&&Date.now()-g.at<GOLD_REFRESH_MS;
 const gDefault={mode:'market',karat:21,manual:'',px:0,at:0};
 const gset=()=>{try{const o=Object.assign({},gDefault,JSON.parse(localStorage.getItem(GKEY)||'{}'));if(!o.kset)o.karat=21;return o;}catch(e){return Object.assign({},gDefault);}};   /* 21k until someone picks another purity */
-const gsave=o=>{try{localStorage.setItem(GKEY,JSON.stringify(Object.assign(gset(),o)));}catch(e){}};
+const gsave=o=>{try{const old=gset(),next=Object.assign({},old,o);localStorage.setItem(GKEY,JSON.stringify(next));if((old.mode!==next.mode||old.karat!==next.karat||old.manual!==next.manual||old.kset!==next.kset)&&!window.lgApplyingRemoteSettings&&window.lgCfgChanged)window.lgCfgChanged();}catch(e){}};
 /* Live and typed prices are turned into a 24k price per gram, then each gold entry is scaled by its own purity. */
 function px24(){
   const g=gset();if(g.mode!=='market')return 0;
@@ -716,7 +716,7 @@ async function fetchGoldHistory(force){
       if(d.length>=7&&k>='2024-01'&&p>500&&p<20000){const s=sums[k]||(sums[k]=[0,0]);s[0]+=p;s[1]++;}});
     const m={};Object.keys(sums).forEach(k=>{m[k]=sums[k][0]/sums[k][1]/OZ;});   /* monthly average, USD per gram of 24k */
     if(!Object.keys(m).length)return false;
-    hsave({at:Date.now(),m});return true;
+    hsave({at:Date.now(),m});if(window.lgCfgChanged)window.lgCfgChanged();return true;
   }catch(e){return false;}
 }
 function monthPx(k){const h=hget();return(h.man&&h.man[k])||(h.m&&h.m[k])||(h.srv&&h.srv.months&&h.srv.months[k])||(h.snap&&h.snap[k])||0;}
@@ -861,6 +861,7 @@ const SH={
   goldMode:{get:()=>gset().mode,set:v=>{gsave({mode:v==='cost'?'cost':'market'});}},
   goldManual:{get:()=>gset().manual||null,set:v=>{gsave({manual:v||''});}},
   goldMan:{get:()=>{const m=hget().man;return m&&Object.keys(m).length?m:null;},set:v=>{hsave({man:v||{}});}},
+  goldHistory:{get:()=>{const h=hget();return {m:h.m||{},at:h.at||0};},set:v=>{if(v&&typeof v==='object'&&v.m){const old=hget();if((+v.at||0)>=(+old.at||0))hsave({m:v.m,at:v.at||0});}}},
   delivery:{get:()=>deliveryPrefs(),set:v=>{if(v&&typeof v==='object'){localStorage.setItem('lg-delivery-v1',JSON.stringify(v));drawDelivery();}}},
   appUrl:{get:()=>location.origin+location.pathname,set:()=>{}}
 };
@@ -878,17 +879,17 @@ function shMerge(reply){
   if(!reply||typeof reply.settings!=='object'||!reply.settings){shared.ok=false;return null;}
   shared.ok=true;shared.backupAt=+reply.backupAt||0;
   // On first Google connection, remote settings must win over device defaults.
-  if(Object.keys(jget(SHU)).length)shStamp();
+  if(!Object.keys(R).length && !Object.keys(jget(SHU)).length)shStamp();
   const u=jget(SHU),s=jget(SHS),R=reply.settings,out={};let applied=false;
   Object.keys(SH).forEach(k=>{
     const r=R[k],lu=+u[k]||0,ru=r?(+r.u||0):0;
-    if(r&&ru>lu){try{SH[k].set(r.v===''||r.v==null?null:JSON.parse(r.v));s[k]=r.v||'';u[k]=ru;applied=true;}catch(e){}}
+    if(r&&ru>lu){try{window.lgApplyingRemoteSettings=true;SH[k].set(r.v===''||r.v==null?null:JSON.parse(r.v));s[k]=r.v||'';u[k]=ru;applied=true;}catch(e){console.warn('Settings restore failed for',k,e);}finally{window.lgApplyingRemoteSettings=false;}}
     else if(lu>ru&&(s[k]||'')!=='')out[k]={v:s[k],u:lu};
     else if(lu>ru&&r)out[k]={v:'',u:lu};
   });
   if(applied){try{localStorage.setItem(CFGKEY,JSON.stringify(CFG));}catch(e){}jset(SHU,u);jset(SHS,s);_ppl=null;shared.applied=true;}
   // After adopting remote values, stamp any genuinely missing local keys for first sync.
-  if(applied)shStamp();
+  // Never re-stamp downloaded values as fresh local edits.
   return Object.keys(out).length?out:null;
 }
 const shared={ok:null,backupAt:0,applied:false};
@@ -1694,10 +1695,10 @@ function reportData(k){
   const label=fk(k),partial=k===nowKey();
   const mom=hasPrev?pcOf(C0.saved,P0.saved):null,yoy=hasLy?pcOf(C0.saved,L0.saved):null,ytdYoy=hasYL?pcOf(Y0.saved,YL.saved):null;
   /* gold at the end of the month */
-  let gm=null;try{gm=(window.lgGoldMonthly(rows)||[]).filter(r=>r.k<=k&&r.px).pop()||null;}catch(e){}
+  let gm=null;try{gm=(window.lgGoldMonthly(rows)||[]).find(r=>r.k===k)||null;}catch(e){}
   let cash=0,loan=0,goldCost=0,grams=0;
   rows.forEach(d=>{if(!(d.sortTs<R.b))return;if(isLoanRow(d))loan-=d.usd||0;else{cash+=d.usd||0;goldCost+=(d.gold||0)*(d.goldPrice||0);grams+=d.gold||0;}});
-  const goldW=grams>0?(gm&&gm.value!=null&&px24()>0?gm.value:goldCost):0,net=cash+goldW-loan;
+  const goldKnown=grams<=0||(gm&&gm.value!=null);const goldW=grams>0?(goldKnown?gm.value:null):0,net=goldKnown?cash+goldW-loan:null;
   const D={k,label,partial,title:appTitle(),sections:[]};
   D.sub=`${partial?'Month in progress, figures so far. ':''}Prepared ${fd(Date.now())}.`;
   /* headline tiles */
@@ -1707,16 +1708,16 @@ function reportData(k){
     {l:'Balance at month end',v:money0(bal),s:hasPrev?`${signed0(bal-balP)} in the month, gold at market`:'gold at market',tone:''},
     {l:`Saved in ${R.y} so far`,v:money0(Y0.saved),s:hasYL?`${pS(ytdYoy)} vs the same months of ${R.y-1}`:`no ${R.y-1} to compare with`,tone:tone(ytdYoy)},
     {l:'Against the phased goal',v:gr==null?'n/a':pS(gr),s:path?`${signed0(gap)} vs the path · target ${money0(path.goal)}`:'no target set for this year',tone:tone(gr)},
-    {l:'Net worth',v:money0(net),s:`cash ${money0(cash)}${grams>0?` · gold ${money0(goldW)}`:''}${loan>0.5?` · loans −${money0(loan)}`:''}`,tone:''}]});
+    {l:'Net worth',v:net==null?'Unavailable':money0(net),s:net==null?'Gold market price missing for this report month':`cash ${money0(cash)}${grams>0?` · gold ${money0(goldW)}`:''}${loan>0.5?` · loans −${money0(loan)}`:''}`,tone:''}]});
   /* Report v3: reconciliation, contributor detail, gold market versus invested cost. */
   const gmAll=goldMonthly(rows),gmCur=gmAll.find(x=>x.k===k),gmPrev=gmAll.find(x=>x.k===pk);
   const priorGoldValue=gmPrev&&gmPrev.value!=null?gmPrev.value:0;
-  const currentGoldValue=gmCur&&gmCur.value!=null?gmCur.value:goldW;
+  const currentGoldValue=gmCur&&gmCur.value!=null?gmCur.value:null;
   const goldPriceEffect=gmCur&&Number.isFinite(gmCur.priceEffect)?gmCur.priceEffect:null;
   const goldBought=C0.gold;
   const contributorSum=C0.p.reduce((a,b)=>a+b,0);
   const nonContributor=C0.saved-contributorSum;
-  const netChange=hasPrev?net-(function(){let pc=0,pl=0,pg=0;rows.forEach(d=>{if(d.sortTs>=Rp.b)return;if(isLoanRow(d))pl-=d.usd||0;else{pc+=d.usd||0;pg+=(d.gold||0)*(d.goldPrice||0);}});return pc+(gmPrev&&gmPrev.value!=null?gmPrev.value:pg)-pl;})():null;
+  const netChange=hasPrev&&net!=null&&gmPrev&&gmPrev.value!=null?net-(function(){let pc=0,pl=0,pg=0;rows.forEach(d=>{if(d.sortTs>=Rp.b)return;if(isLoanRow(d))pl-=d.usd||0;else{pc+=d.usd||0;pg+=(d.gold||0)*(d.goldPrice||0);}});return pc+(gmPrev&&gmPrev.value!=null?gmPrev.value:pg)-pl;})():null;
   const bridgeResidual=netChange==null||goldPriceEffect==null?null:netChange-C0.saved-goldPriceEffect;
   const signedMoney=n=>n==null?'—':signed0(n);
   const contributorRows=PP.map((name,i)=>[name,money0(C0.p[i]),money0(Y0.p[i]),contributorSum>0?pS(C0.p[i]/contributorSum):'—']);
@@ -1726,25 +1727,27 @@ function reportData(k){
     note:'Individual contributions reflect named deposits. The reconciliation row explains any difference between deposits and total savings (including loan entries or adjustments).'});
   if(hasPrev){
     D.sections.push({type:'table',title:'Why net worth changed · monthly bridge',cols:[['Driver',0],['Amount',1]],rows:[
-      ['Opening net worth',money0(net-netChange)],['Net savings recorded',signedMoney(C0.saved)],
+      ['Opening net worth',netChange==null?'Unavailable':money0(net-netChange)],['Net savings recorded',signedMoney(C0.saved)],
       ['Gold market price effect',goldPriceEffect==null?'Not available':signedMoney(goldPriceEffect)],
       ['Other changes / reconciliation',bridgeResidual==null?'Not available':signedMoney(bridgeResidual)],
-      ['Closing net worth',money0(net)]],boldLast:true,
+      ['Closing net worth',net==null?'Unavailable':money0(net)]],boldLast:true,
       note:goldPriceEffect==null?'Gold price impact cannot be isolated without market prices for both months. Other / reconciliation is NOT a verified income or gain.':'Other / reconciliation is an unexplained accounting difference, not a verified gain. Check cash-to-gold transfers and loan entries.'});
   }
   if(gmAll.length){
+    const observed=gmAll.filter(x=>x.k<=k),missing=observed.filter(x=>!x.px).length;
+    D.sections.push({type:'insights',title:'Gold price data quality',items:[missing?`${missing} month(s) have no verified gold price. Charts intentionally show gaps and month-end net worth cannot be verified for those months.`:'Every displayed month has a recorded gold quote.', 'The historical market series uses monthly averages of available daily observations; it is not a month-end closing price.', 'Your gold purchase cost is tracked separately from market value. Cash-to-gold transfers and loan movements still require reconciliation.']});
     const hist=gmAll.filter(x=>x.k<=k).slice(-18),cGold='#B68B3E',cCost='#346F9E',cMarket='#267C6A';
-    D.sections.push({type:'chart',title:'Gold price history · USD per 24k gram (recorded / estimated)',cfg:{type:'line',data:{labels:hist.map(x=>lbl(x.k)),datasets:[{label:'Market price / g (24k)',data:hist.map(x=>x.px),borderColor:cGold,backgroundColor:'rgba(182,139,62,.10)',tension:.25,pointRadius:2,spanGaps:false}]},options:opt()}});
+    D.sections.push({type:'chart',title:'Gold price history · USD per 24k gram (observed; gaps mean unavailable)',cfg:{type:'line',data:{labels:hist.map(x=>lbl(x.k)),datasets:[{label:'Market price / g (24k)',data:hist.map(x=>x.px||null),borderColor:cGold,backgroundColor:'rgba(182,139,62,.10)',tension:.25,pointRadius:2,spanGaps:false}]},options:opt()}});
     D.sections.push({type:'chart',title:'Your gold · cumulative cost vs market value',cfg:{type:'line',data:{labels:hist.map(x=>lbl(x.k)),datasets:[
       {label:'Cumulative amount invested',data:hist.map(x=>x.cost),borderColor:cCost,tension:.2,pointRadius:2},
       {label:'Market value of holdings',data:hist.map(x=>x.value),borderColor:cMarket,tension:.2,pointRadius:2,spanGaps:false}]},options:opt()}});
     D.sections.push({type:'table',title:'Gold investment · monthly and cumulative',cols:[['Metric',0],['This month',1],['Total to date',1]],rows:[
       ['Gold bought · paid',money0(goldBought),money0(goldCost)],
       ['Gold bought · grams',`${rows.filter(x=>x.yyyyMM===k&&!isLoanRow(x)).reduce((a,x)=>a+(x.gold||0),0).toFixed(2)} g`,`${grams.toFixed(2)} g`],
-      ['Gold market value',signedMoney(currentGoldValue-priorGoldValue),money0(goldW)],
+      ['Gold market value',currentGoldValue==null||gmPrev?.value==null?'—':signedMoney(currentGoldValue-priorGoldValue),goldW==null?'Unavailable':money0(goldW)],
       ['Gold price-only effect',goldPriceEffect==null?'—':signedMoney(goldPriceEffect),'—'],
-      ['Unrealized gain / loss', '—',signedMoney(goldW-goldCost)]],
-      note:'The market-value change includes purchases and price movement. The price-only effect is available only when both consecutive months have market prices. Missing prices are never inferred from what you paid.'});
+      ['Unrealized gain / loss', '—',goldW==null?'Unavailable':signedMoney(goldW-goldCost)]],
+      note:'Historical prices are monthly averages of available observations, not necessarily month-end closes. Gaps indicate missing prices. No purchase price is used as a market quote. Performance requires observations for both months.'});
     const buys=rows.filter(d=>d.sortTs<R.b&&!isLoanRow(d)&&(d.gold||0)>0).sort((a,b)=>b.sortTs-a.sortTs);
     if(buys.length)D.sections.push({type:'table',title:'Gold purchase ledger · recorded lots',cols:[['Date',0],['Contributor',0],['Gold',1],['Paid',1]],rows:buys.map(d=>[(d.date||'').split(' ')[0],cap(ownerKey(d.name))||'—',`${Number(d.gold||0).toFixed(2)} g`,money0((d.gold||0)*(d.goldPrice||0))]),note:'Purchase prices reflect amounts recorded in the ledger. For detailed purity and individual lot valuation, use Gold over time on the dashboard.'});
   }
@@ -1998,12 +2001,12 @@ function buildOnePagePdf(D){
   P.page();const row=allData,range=mRange(D.k),prev=mRange(addMonths(D.k,-1)),year=new Date(range.y,0,1).getTime();
   const cur=bucket(row,range.a,range.b),ytd=bucket(row,year,range.b),previous=bucket(row,prev.a,prev.b);
   const t=computeAnalytics(row),path=pathFor(range.y,t),actual=cumAt(t,D.k),target=path?path.at(D.k):null;
-  const value=(end)=>{let cash=0,cost=0,g=0,loans=0;row.forEach(d=>{if(!(d.sortTs<end))return;if(isLoanRow(d))loans-=d.usd||0;else{cash+=d.usd||0;cost+=(d.gold||0)*(d.goldPrice||0);g+=d.gold||0;}});let price=null;try{const gs=goldMonthly(row).filter(x=>x.k<=(end===range.b?D.k:addMonths(D.k,-1))&&x.px);if(gs.length)price=gs[gs.length-1].px;}catch(e){};const units=row.filter(d=>d.sortTs<end&&!isLoanRow(d)).reduce((a,d)=>a+(d.gold||0)*rowKarat(d)/24,0);return {cash,cost,grams:g,loans,gold:g>0?(price!=null?units*price:cost):0,price};};
-  const now=value(range.b),before=value(prev.b),nw=now.cash+now.gold-now.loans,pw=before.cash+before.gold-before.loans,change=nw-pw;
-  const goldFlow=now.gold-before.gold,acquired=now.cost-before.cost;
+  const value=(end)=>{let cash=0,cost=0,g=0,loans=0;row.forEach(d=>{if(!(d.sortTs<end))return;if(isLoanRow(d))loans-=d.usd||0;else{cash+=d.usd||0;cost+=(d.gold||0)*(d.goldPrice||0);g+=d.gold||0;}});let price=null;try{const month=end===range.b?D.k:addMonths(D.k,-1);const observed=goldMonthly(row).find(x=>x.k===month);if(observed&&observed.px)price=observed.px;}catch(e){};const units=row.filter(d=>d.sortTs<end&&!isLoanRow(d)).reduce((a,d)=>a+(d.gold||0)*rowKarat(d)/24,0);return {cash,cost,grams:g,loans,gold:g>0?(price!=null?units*price:null):0,price};};
+  const now=value(range.b),before=value(prev.b),nw=now.gold==null?null:now.cash+now.gold-now.loans,pw=before.gold==null?null:before.cash+before.gold-before.loans,change=nw==null||pw==null?null:nw-pw;
+  const goldFlow=now.gold==null||before.gold==null?null:now.gold-before.gold,acquired=now.cost-before.cost;
   // New gold purchases transfer value from cash to gold, not new net worth.
-  const market=goldFlow-acquired,contribution=cur.saved,other=change-contribution-market;
-  const fmt=n=>money0(n),sign=n=>(n>=0?'+':'−')+fmt(Math.abs(n)),pct=n=>n==null?'—':pS(n);
+  const market=goldFlow==null?null:goldFlow-acquired,contribution=cur.saved,other=change==null||market==null?null:change-contribution-market;
+  const fmt=n=>n==null?'Unavailable':money0(n),sign=n=>n==null?'Unavailable':(n>=0?'+':'−')+fmt(Math.abs(n)),pct=n=>n==null?'—':pS(n);
   const txt=(x,y,v,size=10,color=N,bold=false,align='left')=>P.text(x,y,v,{size,color,bold,align});
   const line=(y)=>P.line(L,y,R,y,B,.8);
   const title=(y,v)=>txt(L,y,v.toUpperCase(),9,M,true);
@@ -2026,7 +2029,7 @@ function buildOnePagePdf(D){
   txt(X,Y+CH+14,months.length?lbl(months[0]):'',8,M);txt(X+CW,Y+CH+14,months.length?lbl(months[months.length-1]):'',8,M,false,'right');
   txt(L,542,'— Actual',9,'#306B9B',true);if(path)txt(L+88,542,'— Phased goal',9,GOLD,true);
   line(553);title(575,'Gold · position and performance');
-  const gmetrics=[['HOLDINGS',now.grams.toFixed(2)+' g'],['INVESTED COST',fmt(now.cost)],['MARKET VALUE',fmt(now.gold)],['UNREALIZED P/L',sign(now.gold-now.cost)]];
+  const gmetrics=[['HOLDINGS',now.grams.toFixed(2)+' g'],['INVESTED COST',fmt(now.cost)],['MARKET VALUE',fmt(now.gold)],['UNREALIZED P/L',now.gold==null?'Unavailable':sign(now.gold-now.cost)]];
   gmetrics.forEach((m,i)=>{const x=L+(i%2)*W/2,yy=599+Math.floor(i/2)*38;txt(x,yy,m[0],8,M,true);txt(x,yy+18,m[1],13,N,true);});
   txt(L,680,'Gold price impact this month: '+sign(market)+'  |  Gold acquired: '+Math.max(0,now.grams-before.grams).toFixed(2)+' g',9,market<0?RED:GREEN);
   line(699);title(722,'Performance at a glance');

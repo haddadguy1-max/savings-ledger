@@ -65,7 +65,7 @@ window.LGGoogle = (() => {
       const old=si.get(key);if(old&&(+v.u||0)<=old.updated)continue;
       const line=old?old.line:settingRows.length+2;
       if(!old){settingRows.push([key]);si.set(key,{line,updated:+v.u||0});}
-      changes.push({range:"'Settings'!A"+line+':C'+line,values:[[key,v.v||'',v.u||0]]});
+      changes.push({range:"'Settings'!A"+line+':C'+line,values:[[key,v.v??'',v.u||0]]});
     }
     if(changes.length)await request(sheets('/values:batchUpdate'),{method:'POST',body:JSON.stringify({valueInputOption:'RAW',data:changes})});
     return {ok:true};
