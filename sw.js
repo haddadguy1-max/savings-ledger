@@ -1,7 +1,7 @@
 /* Savings Ledger service worker. Pages and scripts are always asked from the site first, so a new release shows
    on the next launch; the saved copy is only used when the phone is offline. */
-const V='lg-ledger-v27';
-const CORE=['./','index.html','app-extras.js?v=27','google-drive.js?v=27','manifest.json','version.json','icon-180.png','icon-192.png','icon-512.png'];
+const V='lg-ledger-v29';
+const CORE=['./','index.html','app-extras.js?v=29','google-drive.js?v=29','manifest.json','version.json','icon-180.png','icon-192.png','icon-512.png'];
 const CDN=[
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
   'https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2/dist/chartjs-plugin-datalabels.min.js',
@@ -15,7 +15,7 @@ self.addEventListener('install',e=>{
   }));
 });
 self.addEventListener('activate',e=>{
-  e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));
+  e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V&&k.startsWith('lg-ledger-')).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));
 });
 self.addEventListener('fetch',e=>{
   const r=e.request;if(r.method!=='GET')return;
@@ -45,9 +45,26 @@ self.addEventListener('notificationclick',e=>{
     return clients.openWindow(url);
   }));
 });
-/* ready for a push server, if one is added later: it sends {title, body, url} */
+/* A push from the ledger script carries no data: it is only a knock. Ask the ledger what to show, then show it.
+   Something is always shown, because iPhone withdraws push from apps that receive one silently. */
 self.addEventListener('push',e=>{
-  let d={};try{d=e.data?e.data.json():{};}catch(err){}
-  e.waitUntil(self.registration.showNotification(d.title||'Savings Ledger',{body:d.body||'Open your ledger.',icon:'icon-192.png',tag:d.tag||'lg-push',
-    data:{url:new URL(d.url||'./',self.registration.scope).href}}));
+  e.waitUntil((async()=>{
+    let notes=[],d=null;
+    try{d=e.data?e.data.json():null;}catch(err){}
+    if(d&&d.title)notes=[d];
+    else{
+      try{
+        const c=await caches.open('lg-push-cfg'),hit=await c.match(new Request('./__push-cfg')),cfg=hit?await hit.json():null;
+        if(cfg&&cfg.url){
+          const r=await fetch(cfg.url+(cfg.url.includes('?')?'&':'?')+'token='+encodeURIComponent(cfg.token)+'&notes=1&dev='+encodeURIComponent(cfg.dev),{cache:'no-store'});
+          const j=await r.json();if(j&&Array.isArray(j.notes))notes=j.notes;
+        }
+      }catch(err){}
+    }
+    if(!notes.length)notes=[{title:'Savings Ledger',body:'There is something new in your ledger.',tag:'lg-new'}];
+    for(const n of notes){
+      await self.registration.showNotification(String(n.title||'Savings Ledger'),{body:String(n.body||''),icon:'icon-192.png',badge:'icon-192.png',tag:'lg-'+(n.tag||'push'),
+        data:{url:new URL(n.url||'./',self.registration.scope).href}});
+    }
+  })());
 });

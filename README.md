@@ -1,55 +1,38 @@
-# Savings Ledger, version 27 (11 Nov 2026)
+# Savings Ledger v29 — Gold data and notifications
 
-## Install
+Built from the user's uploaded `SavingsLedger-v28.zip` (11 November 2026). This release keeps the existing app, Google Apps Script push system, PDF generator, data, settings and icons, while improving gold price sourcing, dated history, cached-quote behavior and historical valuation labels.
 
-**1. GitHub (the app).** Upload every file in this folder to the repository, replacing the old ones:
-`index.html`, `app-extras.js`, `google-drive.js`, `sw.js`, `manifest.json`, `version.json`, the three icons.
-`Code.gs`, `README.md` and the two `test_*.js` files are not needed on GitHub (they do no harm there, as long as
-`Code.gs` still has the placeholder password).
+**Read [`GOLD_NOTIFICATION_LOGIC_v29.md`](GOLD_NOTIFICATION_LOGIC_v29.md)** for the exact data-provider architecture, historical/cached valuation logic, notification triggers, limitations and safe deployment instructions.
 
-**2. Google Sheet (the ledger script).** Open the Sheet, then Extensions, Apps Script.
-Copy your current `const TOKEN = '...'` line somewhere safe. Paste the whole of `Code.gs` over the old code.
-Put your own TOKEN line back. Then Deploy, Manage deployments, the pencil, Version: **New version**, Deploy.
-Saving the file is not enough: without a new version the app keeps talking to the old script.
-Google asks you to authorize once more, because the script now also fetches gold prices.
+## Deployment checklist
 
-**3. On each phone.** Open the app. A bar says "A new version is ready": tap Update now.
-Data, at the bottom, must show **Version 27 · 11 Nov 2026 · ledger script up to date**.
-Do not delete the app or clear Safari data.
+1. **Back up the Google Sheet and any unsynced phone data.** Do not delete the installed PWA or clear Safari data.
+2. **GitHub Pages:** upload the app files (`index.html`, `app-extras.js`, `google-drive.js`, `sw.js`, `manifest.json`, `version.json`, `icon-180.png`, `icon-192.png`, `icon-512.png`). Verify GitHub Pages deployment, then accept **Update now**. The displayed app version should be **29**.
+3. **Apps Script:** In the original spreadsheet's Apps Script editor, preserve the existing `TOKEN` secret, replace `Code.gs`, restore the secret, choose **Deploy → Manage deployments → edit → New version → Deploy**. Run the function `setup()` once to authorize/configure the hourly push trigger. Do not publish the secret to GitHub.
+4. On the installed app, verify **Data → Version 29 · 11 Nov 2026 · ledger script up to date**. Check the Gold area, refresh the live price and history, inspect `Gold prices` in the Sheet, and compare the in-app monthly report against the PDF.
+5. For closed-app notifications, open the Home Screen app on each iPhone, select **Allow notifications**, confirm **Push is on**, and use **Send a test**. Real delivery is not guaranteed until the backend and iPhone have both been tested.
 
-## What changed from version 26
+## Sources
 
-- Entries and settings can no longer be lost on reopening. Version 26 restored a copy saved every 12 seconds over
-  the live data each time the app started.
-- Signing in no longer hides what was on the phone or discards it. Signing out tucks the ledger away on the phone;
-  signing in again brings entries and settings straight back.
-- Settings sync is one key per setting, newest wins. The duplicate "fullDataConfig" key, which could bring an old
-  target back, is gone. A phone meeting a ledger for the first time takes the ledger's settings.
-- Gold: every month has a price. Market average when known (this phone, another phone, or the ledger script),
-  latest price for the current month, and otherwise an estimate between the nearest known prices, always marked.
-  Nothing shows "Unavailable" and no chart stops halfway.
-- Report: one set of figures for the screen and the PDF. The net worth bridge adds up to the dollar.
-  PDF charts are drawn as lines and bars, not as pictures of a hidden canvas.
-- Notifications: five alerts worked out on the phone, plus calendar reminders for when the app is closed.
-- Updates: pages and scripts are always asked from the site first; a version check shows the update bar.
-- Ledger script 3: settings, weekly backup tabs, gold prices tab. No email.
+- Current spot: https://api.gold-api.com/price/XAU (Gold-API.com)
+- Live fallback: https://standardbullion.com/spot-prices.json (bid/ask midpoint)
+- Historical daily closes: https://standardbullion.com/api/v1/market/history?metal=XAU&range=5y
+- Provider documentation and data attribution: https://standardbullion.com/market-data
 
-## Settings tab of the Sheet (one row each: Setting, Value, Updated)
+All prices USD per troy ounce before conversion to USD per gram and karat-specific valuations. The last available dated closing observation per completed UTC month is used for historical reports, not a monthly average. Fallbacks and saved manual prices are labelled as such.
 
-`people`, `title`, `goal`, `startSaving`, `goldKarat`, `goldMode`, `goldManual` (today's typed price),
-`goldMan` (prices typed for a month), `goldHistory` (market monthly averages shared between phones).
-Values are JSON. Rows left by earlier versions (`fullDataConfig`, `delivery`, `reportEmails`, `appUrl`) are ignored.
+## Tests
 
-## Tested here
+With Node.js installed, from the app folder:
 
-`node test_calculations.js`, `node test_regressions.js`, and a browser run at iPhone size against a stand-in for the
-ledger script: 52 checks over three phones and two ledgers (reload, sign in, second phone, settings both ways,
-offline and back, bad reply, wrong password, sign out and in, two ledgers kept apart, invite link, leftovers of
-versions 24 to 26, report against PDF for four months).
+```bash
+node --check app-extras.js
+node --check google-drive.js
+node --check sw.js
+node test_calculations.js
+node test_gold_sources.js
+node test_regressions.js
+node test_script.js
+```
 
-## Not tested here
-
-- The real Google Apps Script, a real iPhone, and GitHub Pages. This workspace has no access to them.
-- The live price services (gold-api.com, freegoldapi.com, Yahoo). They were stood in for.
-- Charts on screen were run with a stand-in for Chart.js. PDF charts were rendered and looked at.
-- "Sign up with Google" stays hidden until a Google OAuth client ID is put in `google-drive.js`.
+These tests use mock providers and a mock Apps Script runtime. They do not constitute a production or live device test.
