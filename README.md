@@ -1,22 +1,26 @@
-# Savings Ledger v24 — Settings sync and report data integrity
+# Savings Ledger v26 — targeted reliability repairs (TEST BUILD)
 
-## Changes
-- Shared settings include all `CFG` Data tab values, target, starting balance, contributors, gold valuation settings, and observed gold price history.
-- Gold setting edits now request a sync, rather than remaining device-local.
-- On a new ledger with no remote settings, local values are seeded. On an existing ledger, remote timestamps are respected.
-- Report and detailed PDF use the same reportData model; missing monthly market quotes are explicitly shown as gaps, not replaced by purchase prices or a later month.
-- One-page PDF no longer substitutes cost basis for missing market valuation; missing net worth is labeled unavailable.
-- Data quality notes explain historical monthly averages versus month-end closes.
-- New Home Screen icons included.
+## Confirmed defects repaired
+1. **Critical:** `shMerge` referenced `R` before its `const` declaration, throwing a ReferenceError and preventing successful settings sync. Corrected order and initial sync logic.
+2. **Critical:** the packaged legacy `Code.gs` had no `doGet`, so the legacy backend could not return rows/settings. Restored authenticated `doGet` returning both. **Redeploy Apps Script as a new version**; uploading the GitHub files alone does not update Apps Script.
+3. **Critical:** account isolation listed `lg-gold-history-v1` while the app actually uses `lg-goldhist-v1`. Corrected account-specific storage so gold history does not leak between ledgers on the same device.
+4. Historical API requests now check HTTP status and merge valid monthly observations into existing history rather than discarding previously saved months.
+5. Report month-end balance headline now uses the same market-valued figure as net worth, rather than a different cost-based balance with a misleading market label.
+6. Gold monthly calculations stop at the current month instead of displaying future-dated holdings.
 
-## Deployment warning
-**This is a test build.** Back up the Google Sheet and the previous app before uploading. Google sign-in still requires your OAuth Client ID. The historical gold provider may not supply all requested months, and this build does not invent missing quotes. True multi-device simultaneous-edit atomicity is not guaranteed by Google Sheets API; do not edit the same setting simultaneously. The existing cash/gold transfer accounting and loan accounting require transaction migration and remain unresolved.
+## What this build does NOT claim
+- No historical API can guarantee every daily/monthly observation; older months can remain carried-forward estimates. Monthly averages are not month-end closes.
+- The Google OAuth client ID is still a placeholder and **Google sign-in is not enabled** until configured.
+- Live two-device synchronization, Google Sheets permissions, and real-money reconciliation have not been tested.
+- Gold purchase transfers and loan accounting still need a redesigned transaction model; do not trust net-worth reconciliation until those are addressed.
+- Google Sheets write operations are not atomic under simultaneous edits.
 
-## Manual cross-device test
-1. Back up the spreadsheet. Open the same ledger on iPhone and laptop.
-2. Change Data → Target to a unique number; wait for Synced; inspect `Settings` tab (`fullDataConfig` and `goal` rows).
-3. Refresh the other device, confirm target and starting savings match. Repeat with contributors and gold purity/mode.
-4. Edit an existing gold purchase cost and verify the `Raw data` row and report on both devices.
-5. Open October report and export PDF. Both should display the same monthly gold observations and missing-price warnings.
-6. Test switching between two accounts: no shared financial settings should leak.
-7. Test offline edit and re-connection. Do not delete the app until all pending edits have synced.
+## Safe installation and tests
+1. Back up the spreadsheet and current GitHub files. Do not delete the PWA or clear Safari data.
+2. Upload extracted ZIP contents to a **test** GitHub Pages repository.
+3. For legacy ledger users, replace Apps Script Code.gs, set the original TOKEN, and **Deploy > Manage deployments > Edit > New version**.
+4. Open test app, sign in, change savings goal, then inspect the Google Sheet `Settings` tab for `goal` and `fullDataConfig`.
+5. Repeat on a second device. Test logout/login, gold prices, and same-month report versus PDF.
+6. Check the developer console and network responses if a value fails to synchronize.
+
+Run `node test_calculations.js` and `node test_regressions.js` to repeat the static and calculation checks.

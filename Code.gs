@@ -59,8 +59,11 @@ function upsert_(rows){
 function settingsTab_(){const ss=SpreadsheetApp.getActive();let s=ss.getSheetByName('Settings');if(!s){s=ss.insertSheet('Settings');s.appendRow(['Key','Value JSON','Updated']);}return s;}
 function readSettings_(){const v=settingsTab_().getDataRange().getValues(),out={};for(let i=1;i<v.length;i++){if(v[i][0])out[String(v[i][0])]={v:String(v[i][1]||''),u:Number(v[i][2])||0};}return out;}
 function saveSettings_(changes){const s=settingsTab_(),v=s.getDataRange().getValues(),ix={};for(let i=1;i<v.length;i++)ix[String(v[i][0])]=i+1;Object.keys(changes||{}).forEach(k=>{const x=changes[k],at=ix[k];if(at&&(Number(v[at-1][2])||0)>=Number(x.u||0))return;const row=[k,String(x.v||''),Number(x.u)||Date.now()];if(at)s.getRange(at,1,1,3).setValues([row]);else{s.appendRow(row);ix[k]=s.getLastRow();}});}
-function recipients_(){const s=readSettings_().reportEmails;if(!s)return [];try{const a=JSON.parse(s.v);return Array.isArray(a)?a.filter(x=>/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x)).slice(0,6):[];}catch(e){return [];}}
-function sendReportEmail_(recipients,test){return {emailSent:false,emailError:"Email reports have been disabled in this version."};}
+
+function doGet(e){
+  if(!e || !e.parameter || e.parameter.token !== TOKEN)return out_({error:'unauthorized'});
+  return out_({rows:read_(),settings:readSettings_()});
+}
 
 function doPost(e){
   let body;
@@ -68,7 +71,7 @@ function doPost(e){
   if (body.token !== TOKEN) return out_({ error:'unauthorized' });
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
-  try { if(body.action==='testEmail')return out_(sendReportEmail_(body.emails||[],true)); upsert_(body.rows || []);saveSettings_(body.settings||{});return out_({ ok:true }); }
+  try { upsert_(body.rows || []);saveSettings_(body.settings||{});return out_({ ok:true }); }
   finally { lock.releaseLock(); }
 }
 
