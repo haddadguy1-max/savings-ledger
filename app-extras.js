@@ -19,18 +19,27 @@ if(!document.querySelector('link[rel="apple-touch-icon"]'))headTag('link',{rel:'
 [['theme-color','#16232F'],['apple-mobile-web-app-capable','yes'],['mobile-web-app-capable','yes'],
  ['apple-mobile-web-app-title','Savings'],['apple-mobile-web-app-status-bar-style','default']]
  .forEach(([n,c])=>{if(!document.querySelector(`meta[name="${n}"]`))headTag('meta',{name:n,content:c});});
-const APPV='23';
+const APPV='27',APPDATE='11 Nov 2026';
 let swReg=null,hadSW=!!(navigator.serviceWorker&&navigator.serviceWorker.controller),updShown=false;
 function showUpdate(){
   if(updShown)return;updShown=true;
   document.body.insertAdjacentHTML('beforeend','<div id="x-upd" role="status"><span>A new version is ready.</span><button type="button" id="x-upd-go">Update now</button></div>');
-  document.getElementById('x-upd-go').onclick=()=>location.reload();
+  document.getElementById('x-upd-go').onclick=async()=>{try{if(swReg)await swReg.update();}catch(e){}location.reload();};
+}
+/* a second, plain check that does not depend on the service worker: compare this copy with the one on the site */
+let verAt=0;
+async function checkVersion(){
+  if(Date.now()-verAt<5*60*1000||!navigator.onLine)return;verAt=Date.now();
+  try{const r=await fetch('version.json?t='+Date.now(),{cache:'no-store'});if(!r.ok)return;const j=await r.json();
+    if(j&&j.v&&String(j.v)!==APPV&&Number(j.v)>Number(APPV))showUpdate();}catch(e){}
 }
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').then(r=>{swReg=r;}).catch(()=>{}));
   navigator.serviceWorker.addEventListener('controllerchange',()=>{if(hadSW)showUpdate();hadSW=true;});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&swReg)swReg.update().catch(()=>{});});
 }
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkVersion();});
+setTimeout(checkVersion,4000);
 try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
 
 /* ---------- styles and markup ---------- */
@@ -127,6 +136,7 @@ $('x-upd-check').onclick=async()=>{
   if(!swReg){toast('Updates are checked when the app is installed or opened from its web address.');return;}
   toast('Checking…');
   try{await swReg.update();}catch(e){toast('Could not check. Are you offline?');return;}
+  verAt=0;await checkVersion();
   setTimeout(()=>{if(!updShown)toast('You have the latest version.');},2500);
 };
 const thr=document.querySelector('#tx-table thead tr');
@@ -143,17 +153,17 @@ function save(){
   const now=Date.now(),seen={};ver++;
   allData.forEach(r=>{seen[r.id]=1;const s=sig(r);if(lastSig[r.id]!==s){r.updated=now;lastSig[r.id]=s;delete tomb[r.id];}});
   Object.keys(lastSig).forEach(id=>{if(!seen[id]){tomb[id]=now;delete lastSig[id];}});
-  persist();scheduleSync();
+  persist();markDirty();scheduleSync();
 }
 function loadSaved(){try{const r=JSON.parse(localStorage.getItem(KEY)||'[]');return Array.isArray(r)?r:[];}catch(e){return [];}}
 function status(){
-  $('file-info').textContent=(allData.length?`${allData.length} entries`:'No entries yet')+(cfg()?` · ${syncState||'Signed in'}`:' · saved on this phone');
+  $('file-info').textContent=(allData.length?`${allData.length} entries`:'No entries yet')+(cfg()?` · ${syncState||'Signed in'}${isDirty()&&!/Sync|Connect/.test(syncState)?' · changes waiting to upload':''}`:' · saved on this phone');
   const b=readPrefs().lastBackup;$('x-data-hint').textContent=b?`Last export ${b}`:'';
   const ba=shared.backupAt?new Date(shared.backupAt):null;
   $('x-data-sub').textContent=cfg()
-    ?('Your entries are saved to your shared ledger. '+(shared.ok?`It keeps a weekly copy by itself${ba?` (last one ${ba.getDate()} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][ba.getMonth()]})`:''}, and the last 8 stay in the Sheet as “Backup” tabs.`:(shared.ok===false?'Update the ledger script to get weekly automatic copies, shared settings and the monthly email.':'')))
+    ?('Your entries are saved to your shared ledger. '+(shared.ok?`Your settings are saved there too, so they follow you to any phone. `+(shared.api>=2?`The ledger keeps a weekly copy by itself${ba?` (last one ${ba.getDate()} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][ba.getMonth()]})`:''}, and the last 8 stay in the Sheet as “Backup” tabs.`:'Update the ledger script (Code.gs) to add weekly automatic copies and a second source for gold prices.'):(shared.ok===false?'This ledger runs an old script that cannot store settings. Update the ledger script (Code.gs) so your names, target and gold options are saved with the ledger.':'')))
     :'Entries live on this phone only. Sign in to share them, or export a backup now and then.';
-  $('x-ver').textContent=`Version ${APPV}`+(cfg()&&shared.ok!=null?` · ledger script ${shared.ok?'up to date':'older version'}`:'');
+  $('x-ver').textContent=`Version ${APPV} · ${APPDATE}`+(cfg()&&shared.ok!=null?` · ledger script ${shared.ok&&shared.api>=2?'up to date':'older version'}`:'');
 }
 function setData(rows){allData=rows;save();status();renderAll();}
 function toast(msg,undo){
@@ -179,7 +189,7 @@ const LF={who:'',cat:'',year:''};
 const kOf=d=>{const m=/(\d{2})\s*k/i.exec(d.type||'');return m?+m[1]:0;};
 const isLoanRow=d=>isLoanName(d.name);
 const isGoldRow=d=>!isLoanRow(d)&&(d.gold||0)>0;
-const goldNow=d=>{const p=px24();return p>0?(d.gold||0)*p*rowKarat(d)/24:(d.gold||0)*(d.goldPrice||0);}; // Cost-basis fallback, NOT a market quote
+const goldNow=d=>{const p=pxNow();return p>0?(d.gold||0)*p*rowKarat(d)/24:(d.gold||0)*(d.goldPrice||0);};   /* falls back to what was paid only when no price exists at all */
 function lfPass(d){
   const n=d.name||'',loan=isLoanRow(d),gold=isGoldRow(d);
   if(LF.who&&ownerKey(n)!==LF.who)return false;
@@ -289,14 +299,14 @@ function closeSheet(){$('x-sheet').hidden=true;$('x-scrim').hidden=true;document
 function submit(again){
   const err=$('x-err');err.textContent='';
   const ymd=$('x-date').value;if(!ymd){err.textContent='Pick a date.';return;}
-  if(ymd>toYMD(Date.now())){err.textContent='Future-dated transactions are not supported in the historical report.';return;}
+  if(ymd>toYMD(Date.now())){err.textContent='That date is in the future. Use today or an earlier date.';return;}
   const [y,m,d]=ymd.split('-').map(Number),now=new Date();
   const date=`${p2(d)}/${p2(m)}/${y} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
   const k=S.kind,row={id:S.editId||uid(),date,sortTs:parseSortDate(date),yyyyMM:parseDateToYYYYMM(date),type:'Cash USD',gold:0,eur:0,usd:0,goldPrice:0,name:S.who.toLowerCase()};
   if(!S.who){err.textContent='Choose who this is for, or tap + New to add a name.';return;}
   if(k==='gold'){
     const g=num($('x-g').value),p=num($('x-p').value);
-    if(!Number.isFinite(g)||!Number.isFinite(p)||g<=0||p<=0){err.textContent='Gold grams and total purchase price must be positive finite numbers.';return;}
+    if(!Number.isFinite(g)||!Number.isFinite(p)||g<=0||p<=0){err.textContent='Enter the grams and what you paid, both above zero.';return;}
     if(!(g>0)||!(p>0)){err.textContent='Enter grams and a price per gram above zero.';return;}
     const kt=$('x-k').value;row.type=kt?`Gold ${kt}k`:'Gold';row.gold=g;row.goldPrice=p;writePrefs({price:p,karat:kt});
   }else{
@@ -421,39 +431,51 @@ $('x-data').insertAdjacentHTML('beforebegin',`<div class="section" id="x-sync"><
  <label class="x-label" for="x-sync-token">Password</label><input id="x-sync-token" type="password" class="x-input" autocomplete="current-password" autocapitalize="off">
  <div class="x-btns"><button type="button" id="x-sync-connect">Sign in</button><button type="button" id="x-sync-invite">Invite someone</button><button type="button" id="x-sync-now">Sync now</button><button type="button" id="x-sync-off" class="danger">Sign out</button></div></div></div>`);
 $('x-sync').querySelector('.kpi-card').insertAdjacentHTML('afterbegin',`<div style="margin-bottom:16px"><button type="button" id="x-google-login" class="x-primary" style="width:100%">Sign up with Google · My Drive</button><p class="x-note" id="x-google-info">Your own Google Sheet is created automatically. No Apps Script required. On iPhone, sign in through Safari if the home-screen app blocks Google login.</p></div>`);
-/* Account-specific local cache: never let another ledger inherit financial settings. */
-const ACCOUNT_KEYS=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-goldhist-v1','lg-delivery-v1','lg-xp-v1','lg-ledger-seeded'];
-const ACCOUNT_ACTIVE='lg-active-account-v2';
+$('x-google-login').parentElement.hidden=!(window.LGGoogle&&LGGoogle.ready());
+/* Each ledger keeps its own copy of the data on this phone. The live keys are always the truth for the
+   ledger in use; a ledger that is not in use is tucked away whole and comes back when you sign in to it again. */
+const ACCOUNT_KEYS=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-goldhist-v1','lg-delivery-v1','lg-xp-v1','lg-ledger-seeded','lg-report-seen','lg-notes-v1','lg-dirty-v1'];
+const ACCOUNT_ACTIVE='lg-active-account-v2',DEVICE='device',DIRTY='lg-dirty-v1';
 const accountId=(kind,id)=>kind+':'+id;
-const accountSnapshot=()=>{const o={};ACCOUNT_KEYS.forEach(k=>o[k]=localStorage.getItem(k));return o;};
-const accountSave=()=>{const id=localStorage.getItem(ACCOUNT_ACTIVE);if(id)localStorage.setItem('lg-account-cache-v2:'+id,JSON.stringify(accountSnapshot()));};
-function accountSwitch(id){
-  const previous=localStorage.getItem(ACCOUNT_ACTIVE);
-  if(previous===id)return;
-  if(!previous && !localStorage.getItem('lg-account-cache-v2:original-device'))localStorage.setItem('lg-account-cache-v2:original-device',JSON.stringify(accountSnapshot()));
-  accountSave();
-  let snapshot={};try{snapshot=JSON.parse(localStorage.getItem('lg-account-cache-v2:'+id)||'{}')||{};}catch(e){}
-  ACCOUNT_KEYS.forEach(k=>snapshot[k]==null?localStorage.removeItem(k):localStorage.setItem(k,snapshot[k]));
-  localStorage.setItem(ACCOUNT_ACTIVE,id);
-  CFG=JSON.parse(localStorage.getItem(CFGKEY)||'{}');_ppl=null;
-  allData=loadSaved();try{tomb=JSON.parse(localStorage.getItem(TOMB)||'{}')||{};}catch(e){tomb={};}
-  lastSig={};allData.forEach(r=>lastSig[r.id]=sig(r));ver++;
-  renderAll();
+const activeAccount=()=>{try{return localStorage.getItem(ACCOUNT_ACTIVE)||DEVICE;}catch(e){return DEVICE;}};
+const stashKey=id=>'lg-account-cache-v2:'+id;
+const hasStash=id=>{try{return !!localStorage.getItem(stashKey(id));}catch(e){return false;}};
+/* storage only. carry=true: this phone's own data goes into the ledger instead of being set aside */
+function accountMove(id,carry,keepStamps){
+  const prev=activeAccount();if(prev===id)return false;
+  if(carry&&!hasStash(id)){
+    localStorage.removeItem(stashKey(prev));
+    if(!keepStamps)['lg-shu-v1','lg-shs-v1'].forEach(k=>localStorage.removeItem(k));   /* first meeting: the ledger's settings win */
+  }else{
+    const snap={};ACCOUNT_KEYS.forEach(k=>{snap[k]=localStorage.getItem(k);});
+    localStorage.setItem(stashKey(prev),JSON.stringify(snap));
+    let next={};try{next=JSON.parse(localStorage.getItem(stashKey(id))||'{}')||{};}catch(e){}
+    ACCOUNT_KEYS.forEach(k=>next[k]==null?localStorage.removeItem(k):localStorage.setItem(k,next[k]));
+    localStorage.removeItem(stashKey(id));
+  }
+  localStorage.setItem(ACCOUNT_ACTIVE,id);return true;
 }
-/* Do not treat default preferences on a new phone as edits before remote settings arrive. */
-window.addEventListener('pagehide',accountSave);
-setInterval(accountSave,12000);
+function accountReload(){
+  try{CFG=JSON.parse(localStorage.getItem(CFGKEY)||'{}')||{};}catch(e){CFG={};}
+  _ppl=null;allData=loadSaved();try{tomb=JSON.parse(localStorage.getItem(TOMB)||'{}')||{};}catch(e){tomb={};}
+  lastSig={};allData.forEach(r=>{if(!r.updated)r.updated=1;lastSig[r.id]=sig(r);});ver++;dataRev++;
+  shared.ok=null;shared.backupAt=0;shared.applied=false;
+  heroYear=null;status();renderAll();
+}
+const isDirty=()=>{try{return !!localStorage.getItem(DIRTY);}catch(e){return false;}};
+const markDirty=()=>{try{if(cfg()&&!localStorage.getItem(DIRTY))localStorage.setItem(DIRTY,String(Date.now()));}catch(e){}};
 $('x-google-login').onclick=async()=>{
   try{
     if(!window.LGGoogle)throw Error('Google integration not loaded');
     // Google OAuth must be initiated directly from the user gesture.
     const result=await LGGoogle.login();
     // Switch only after Google has successfully identified its spreadsheet.
-    accountSwitch(accountId('google',result.spreadsheetId));
+    const gid=accountId('google',result.spreadsheetId);
+    if(activeAccount()!==gid){accountMove(gid,activeAccount()===DEVICE&&!hasStash(gid)&&result.created);accountReload();}
     localStorage.setItem('lg-google-sheet-id',result.spreadsheetId);
     $('x-google-info').textContent='Connected: '+result.email+' · Google Sheet '+result.spreadsheetId;
     $('x-google-login').textContent='Google account · Reconnect';
-    await sync({manual:true,adopt:true});
+    await sync({manual:true});
   }catch(e){toast(e.message||'Google sign-in failed');}
 };
 /* the login is the ledger's ID, a full link also works; both end up as the same address */
@@ -464,7 +486,7 @@ const isTrue=v=>v===true||v===1||String(v).toLowerCase()==='true';
 function setSyncState(t){syncState=t;const el=$('x-sync-status');if(el)el.textContent=t;status();}
 function scheduleSync(){if(!cfg())return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>sync({quiet:true}),1500);}
 function busy(){const a=document.activeElement;return !$('x-sheet').hidden||!!(a&&a.classList&&a.classList.contains('x-cell'));}
-function errText(e){const m=String(e?.message||'');if(m==='unauthorized')return 'Wrong password.';if(m==='bad-reply')return 'Could not sign in. Check the ledger login.';if(m==='offline'||!navigator.onLine)return 'Offline. Changes are saved here and will sync later.';return 'Sync failed: '+m.slice(0,160);}
+function errText(e){const m=String(e?.message||'');if(m==='unauthorized')return 'Wrong password.';if(m==='bad-reply')return 'The ledger did not answer. Check the ledger login.';if(m==='offline'||!navigator.onLine)return 'Offline. Changes are saved here and will sync later.';return 'Sync failed: '+m.slice(0,160);}
 async function api(method,body){
   const c=cfg();if(c?.mode==='google')return method==='GET'?LGGoogle.get():LGGoogle.post(body||{});let r,j;
   try{
@@ -488,43 +510,50 @@ async function sync(o){
   try{
     const reply=await api('GET'),remote=reply.rows||[],rmap={};srvGold(reply);const sp=shMerge(reply);
     remote.forEach(x=>{rmap[String(x.id)]=x;});
-    const L=o.adopt?[]:allData,T=o.adopt?{}:tomb,lmap={};
+    const L=allData,T=tomb,lmap={};
     L.forEach(r=>{lmap[r.id]=r;});
     const ids=new Set([...L.map(r=>r.id),...Object.keys(T),...Object.keys(rmap)]);
-    const rows=[],nt={},push=[];
+    const rows=[],nt={},push=[],arrived=[],hadRows=L.length>0;
     ids.forEach(id=>{
       const l=lmap[id],lt=T[id],x=rmap[id],lu=l?(l.updated||1):(lt||0),ru=x?(+x.updated||0):-1;
-      if(x&&ru>=lu){if(isTrue(x.deleted))nt[id]=ru;else rows.push(fromRemote(x));}
+      if(x&&ru>=lu){if(isTrue(x.deleted))nt[id]=ru;else{rows.push(fromRemote(x));if(!l&&!lt)arrived.push(rows[rows.length-1]);}}
       else if(l){rows.push(l);push.push(toRemote(l));}
       else if(lt){nt[id]=lt;if(x)push.push({id,deleted:true,updated:lt});}
     });
     if(push.length||sp)await api('POST',sp?{rows:push,settings:sp}:{rows:push});
     if(ver!==v0)syncAgain=true;
     else{
+      try{localStorage.removeItem(DIRTY);}catch(e){}
       const sg=a=>JSON.stringify(a.map(r=>r.id+'|'+r.updated+'|'+sig(r)).sort());
       const changed=sg(rows)!==sg(allData);
       allData=rows;tomb=nt;lastSig={};allData.forEach(r=>{lastSig[r.id]=sig(r);});persist();
       if(changed||shared.applied){shared.applied=false;renderAll();}
     }
-    const n=new Date();setSyncState(`Synced ${p2(n.getHours())}:${p2(n.getMinutes())}`);status();if(window.lgAfterSync)window.lgAfterSync();
+    const n=new Date();setSyncState(`Synced ${p2(n.getHours())}:${p2(n.getMinutes())}`);status();if(window.lgAfterSync)window.lgAfterSync(ver===v0&&hadRows?arrived:[]);
   }catch(e){setSyncState(errText(e));if(o.manual)toast(errText(e));}
   finally{syncing=false;if(syncAgain){syncAgain=false;scheduleSync();}}
 }
 $('x-sync-connect').onclick=async()=>{
   const url=toUrl($('x-sync-url').value),token=$('x-sync-token').value.trim();
   if(!url||!token){toast('Enter your ledger login and password.');return;}
-  // Authenticate BEFORE switching cached data, so a wrong password never changes the account.
+  /* check the login first, so a wrong password changes nothing on this phone */
   const previous=localStorage.getItem(SYNC);
   localStorage.setItem(SYNC,JSON.stringify({url,token}));setSyncState('Connecting…');
   let reply;
-  try{reply=await api('GET');if(!Array.isArray(reply.rows))throw Error('Invalid ledger response');}
+  try{reply=await api('GET');if(!Array.isArray(reply.rows))throw Error('bad-reply');}
   catch(e){previous==null?localStorage.removeItem(SYNC):localStorage.setItem(SYNC,previous);setSyncState('');status();toast(errText(e));return;}
-  const ledgerKey=accountId('legacy',url); // password is not stored in the cache key
-  accountSwitch(ledgerKey);
-  localStorage.setItem(SYNC,JSON.stringify({url,token}));
-  // Remote settings are authoritative on first connection to a ledger.
-  await sync({manual:true,adopt:true});
-  accountSave();
+  const target=accountId('legacy',url),prev=activeAccount();
+  if(prev!==target){
+    const remoteN=reply.rows.filter(x=>!isTrue(x.deleted)).length;
+    let carry=false;
+    if(prev===DEVICE&&!hasStash(target)){
+      carry=!allData.length||!remoteN||confirm(`This ledger already has ${remoteN} entries, and this phone has ${allData.length} of its own.\n\nOK: add this phone's entries to the ledger.\nCancel: keep them aside and show only the ledger.`);
+    }
+    accountMove(target,carry);accountReload();
+  }
+  try{localStorage.setItem('lg-last-login',toLogin(url));}catch(e){}
+  await sync({manual:true});
+  if(shared.ok!=null)toast(`Signed in. ${allData.length} entr${allData.length===1?'y':'ies'} and your settings are loaded.`,false);
 };
 $('x-sync-invite').onclick=async()=>{
   const c=cfg();if(!c){toast('Sign in first.');return;}if(c.mode==='google'){toast('To share a Google ledger, use Google Drive sharing. Each collaborator needs Google access.');return;}
@@ -533,13 +562,16 @@ $('x-sync-invite').onclick=async()=>{
   catch(e){prompt('Copy this invite and send it privately:',link);}
 };
 $('x-sync-now').onclick=()=>{if(!cfg()){toast('Sign in first.');return;}sync({manual:true});};
-$('x-sync-off').onclick=()=>{
-  accountSave();
+$('x-sync-off').onclick=async()=>{
+  if(!cfg()){toast('You are not signed in.');return;}
+  if(isDirty()&&navigator.onLine)await sync({manual:true});
+  if(isDirty()&&!confirm('Some changes have not reached the ledger yet.\n\nSign out anyway? They stay on this phone and upload when you sign in again.'))return;
   if(window.LGGoogle?.active())LGGoogle.signout();
   localStorage.removeItem('lg-google-sheet-id');
   localStorage.removeItem(SYNC);
-  accountSwitch('signed-out');
-  $('x-sync-token').value='';$('x-sync-url').value='';setSyncState('');status();toast('Signed out. Ledger data is isolated.');
+  accountMove(DEVICE,false);accountReload();
+  $('x-sync-token').value='';setSyncState('');status();
+  toast('Signed out. This ledger and its settings stay saved on this phone and come back when you sign in again.',false);
 };
 setInterval(()=>{if(cfg()&&!document.hidden)sync({quiet:true});},45000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cfg())sync({quiet:true});});
@@ -547,8 +579,8 @@ window.addEventListener('online',()=>{if(cfg())sync({quiet:true});});
 
 /* ---------- gold valuation: market price instead of purchase price ---------- */
 const GKEY='lg-gold-v1',OZ=31.1034768;
-const GOLD_REFRESH_MS=24*60*60*1000; // One verified refresh per day while app is opened
-const goldPriceFresh=g=>g&&g.px>0&&g.via==='live'&&g.at>0&&Date.now()-g.at<GOLD_REFRESH_MS;
+const GOLD_REFRESH_MS=24*60*60*1000;   /* a price is called live for a day; the app still asks for a newer one every few minutes */
+const goldPriceFresh=g=>g&&g.px>0&&g.at>0&&Date.now()-g.at<GOLD_REFRESH_MS;
 const gDefault={mode:'market',karat:21,manual:'',px:0,at:0};
 const gset=()=>{try{const o=Object.assign({},gDefault,JSON.parse(localStorage.getItem(GKEY)||'{}'));if(!o.kset)o.karat=21;return o;}catch(e){return Object.assign({},gDefault);}};   /* 21k until someone picks another purity */
 const gsave=o=>{try{const old=gset(),next=Object.assign({},old,o);localStorage.setItem(GKEY,JSON.stringify(next));if((old.mode!==next.mode||old.karat!==next.karat||old.manual!==next.manual||old.kset!==next.kset)&&!window.lgApplyingRemoteSettings&&window.lgCfgChanged)window.lgCfgChanged();}catch(e){}};
@@ -562,21 +594,24 @@ function px24(){
 const rowKarat=r=>{const m=/(\d{2})\s*k/i.exec(r.type||'');const k=m?+m[1]:0;return(k>=8&&k<=24)?k:gset().karat;};
 const baseCompute=computeAnalytics;
 computeAnalytics=function(rows){
-  const t=baseCompute(rows);t.goldCost=t.gold;t.goldPx=0;const p=px24();
-  if(p>0&&t.goldGrams>0){
-    let v=0;rows.forEach(r=>{if(!(r.name||'').includes('loan')&&(r.gold||0)>0)v+=r.gold*p*rowKarat(r)/24;});
-    t.gold=v;t.goldPx=v/t.goldGrams;t.net=t.cash+t.gold-t.loan;
-    const adj=goldAdj(rows);t.cumulativeCost=Object.assign({},t.cumulative);t.goldGain={};
-    t.keys.forEach(k=>{const a=adj(k);t.goldGain[k]=a;t.cumulative[k]+=a;});
+  const t=baseCompute(rows);t.goldCost=t.gold;t.goldPx=0;
+  if(gset().mode==='market'&&t.goldGrams>0){
+    const gm=goldMonthly(rows),nk=toYMD(Date.now()).slice(0,7),cur=gm.find(r=>r.k===nk)||gm[gm.length-1];
+    if(cur&&cur.px){
+      t.gold=cur.value;t.goldPx=cur.value/t.goldGrams;t.net=t.cash+t.gold-t.loan;
+      const adj=goldAdj(rows,gm);t.cumulativeCost=Object.assign({},t.cumulative);t.goldGain={};
+      t.keys.forEach(k=>{const a=adj(k);t.goldGain[k]=a;t.cumulative[k]+=a;});
+    }
   }
   return t;
 };
 /* market value minus price paid for the gold held at the end of month k (0 when gold is valued at cost) */
-function goldAdj(rows){
-  if(!(px24()>0))return ()=>0;
-  let m={};try{goldMonthly(rows).forEach(r=>{if(r.value!=null)m[r.k]=r.value-r.cost;});}catch(e){m={};}
+function goldAdj(rows,gm){
+  if(gset().mode!=='market')return ()=>0;
+  const m={};try{(gm||goldMonthly(rows)).forEach(r=>{if(r.px)m[r.k]=r.value-r.cost;});}catch(e){}
   const ks=Object.keys(m).sort();
-  return k=>{if(k in m)return m[k];let v=0;for(const kk of ks){if(kk<=k)v=m[kk];else break;}return ks.length&&k>ks[ks.length-1]?m[ks[ks.length-1]]:(ks.length&&k<ks[0]?0:v);};
+  if(!ks.length)return ()=>0;
+  return k=>{if(k in m)return m[k];if(k<ks[0])return 0;let v=0;for(const kk of ks){if(kk<=k)v=m[kk];else break;}return v;};
 }
 window.lgGoldAdj=rows=>goldAdj(rows);
 const baseKPIs=updateKPIs;
@@ -607,7 +642,7 @@ function goldStatus(extra){
     /* without gold entries the changes still come from the price history */
     const nk=toYMD(Date.now()).slice(0,7),pm=monthPx(addMonths(nk,-1)),py=monthPx(addMonths(nk,-12)),pd=monthPx(`${+nk.slice(0,4)-1}-12`);
     const mom=last&&last.mom!=null?last.mom:(p&&pm?p/pm-1:null),yoy=last&&last.yoy!=null?last.yoy:(p&&py?p/py-1:null),ytdv=last&&last.ytd!=null?last.ytd:(p&&pd?p/pd-1:null);
-    const src=manual?'manual (not verified market data)':(goldPriceFresh(g)?'verified live feed':'cached / stale, not live');
+    const src=manual?'your typed price':(goldPriceFresh(g)?(g.via==='ledger'?'from your ledger':'live price'):`last price received ${d.getDate()} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]}`);
     $('xg-now').innerHTML=p>0
       ?`<div class="xg-top"><div><div class="xg-l">Price per gram, ${k}k</div><div class="xg-v">${money2(p*k/24)}</div></div><button type="button" class="xg-ref" id="xg-ref" aria-label="Refresh price">↻</button></div>
         <div class="xg-ks">${KS.map(x=>`<button type="button" data-k="${x}" class="${x===k?'active':''}">${x}k${x===g.karat?'<b>·</b>':''}</button>`).join('')}</div>
@@ -619,19 +654,19 @@ function goldStatus(extra){
     else{
       let grams=0,paid=0,now=0;const byK={};
       rows.forEach(r=>{const kk=kOf(r)||g.karat;grams+=r.gold;paid+=r.gold*(r.goldPrice||0);now+=goldNow(r);byK[kk]=(byK[kk]||0)+r.gold;});
-      const hasMarket=px24()>0;const gain=hasMarket?now-paid:null,net=computeAnalytics(allData).net;
+      const hasMarket=pxNow()>0;const gain=hasMarket?now-paid:null,net=computeAnalytics(allData).net;
       hold.hidden=false;
       hold.innerHTML=`<div class="xg-h">Your gold <span class="x-src mix">Ours × market</span></div>
         <div class="xg-grid"><div><span>Holding</span><b>${grams.toFixed(1)} g</b><em>${Object.keys(byK).sort((a,b)=>b-a).map(x=>`${byK[x].toFixed(1)} g of ${x}k`).join(', ')}</em></div>
-        <div><span>Worth now</span><b>${hasMarket?money0(now):'Price unavailable'}</b><em>${net>0?Math.round(now/net*100)+'% of net worth':''}</em></div>
+        <div><span>Worth now</span><b>${money0(now)}</b><em>${net>0?Math.round(now/net*100)+'% of net worth':''}</em></div>
         <div><span>Paid</span><b>${money0(paid)}</b><em>${rows.length} purchase${rows.length>1?'s':''}</em></div>
-        <div><span>Gain</span><b class="${gain!=null&&gain>=0?'pos':'neg'}">${gain==null?'—':signed0(gain)}</b><em>${gain!=null&&paid?(gain>=0?'+':'−')+Math.abs(gain/paid*100).toFixed(1)+'% on what you paid':'Needs current market quote and recorded cost'}</em></div></div>`;
+        <div><span>Gain</span><b class="${gain!=null&&gain>=0?'pos':'neg'}">${gain==null?'—':signed0(gain)}</b><em>${gain!=null&&paid?(gain>=0?'+':'−')+Math.abs(gain/paid*100).toFixed(1)+'% on what you paid':(hasMarket?'':'no price yet, shown at what you paid')}</em></div></div>`;
     }
   }catch(e){console.error(e);}
   if(g.mode!=='market')t='valued at what you paid';
   else if(num(g.manual)>0)t='your typed price';
-  else if(goldPriceFresh(g))t='live · updated within 24h';
-  else if(g.px>0)t='cached price expired · refresh needed';
+  else if(goldPriceFresh(g))t=g.via==='ledger'?'from your ledger':'live';
+  else if(g.px>0)t='last known price';
   else t='no price yet';
   $('x-gold-status').textContent=t+(extra?' · '+extra:'');
 }
@@ -642,24 +677,25 @@ $('x-gold').addEventListener('click',e=>{
 });
 let goldFetchPending=null;
 async function fetchGold(force=false){
-  const existing=gset();
-  if(!force&&goldPriceFresh(existing))return true;
+  const g0=gset();
+  if(!force&&g0.px>0&&g0.via==='live'&&Date.now()-g0.at<10*60*1000)return true;
   if(goldFetchPending)return goldFetchPending;
   goldFetchPending=(async()=>{
     try{
       const r=await fetch('https://api.gold-api.com/price/XAU',{cache:'no-store'});
-      if(!r.ok)throw new Error('Gold API HTTP '+r.status);
-      const data=await r.json();
-      const oz=Number(data.price);
-      if(!Number.isFinite(oz)||oz<=500||oz>=20000)throw new Error('Invalid spot price');
-      const price=oz/OZ;
-      const now=Date.now();
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      const oz=Number((await r.json()).price);
+      if(!Number.isFinite(oz)||oz<=500||oz>=20000)throw new Error('price out of range');
+      const price=oz/OZ,now=Date.now();
       gsave({px:price,at:now,via:'live'});
-      const k=toYMD(now).slice(0,7),sn=(hget().snap)||{};
-      // A live observation is a daily snapshot, not a historical monthly average.
-      sn[k]=price;hsave({snap:sn});
+      const k=toYMD(now).slice(0,7),sn=(hget().snap)||{};sn[k]=price;hsave({snap:sn});
       return true;
-    }catch(e){console.warn('Gold price refresh failed:',e.message);return false;}
+    }catch(e){
+      /* second source: the price the ledger fetched on Google's side */
+      const sv=hget().srv;
+      if(sv&&sv.px>0&&sv.at>(gset().at||0)){gsave({px:sv.px,at:sv.at,via:'ledger'});return Date.now()-sv.at<GOLD_REFRESH_MS;}
+      return false;
+    }
   })();
   try{return await goldFetchPending;}finally{goldFetchPending=null;}
 }
@@ -698,14 +734,15 @@ const gm=gset();$('x-gold-mode').value=gm.mode;$('x-gold-karat').value=String(gm
 $('x-gold-mode').onchange=e=>{gsave({mode:e.target.value});goldStatus();renderAll();if(e.target.value==='market')refreshGold();};
 $('x-gold-karat').onchange=e=>{gsave({karat:+e.target.value,kset:true});goldStatus();renderAll();};
 $('x-gold-manual').onchange=e=>{gsave({manual:e.target.value.trim()});goldStatus();renderAll();if(!e.target.value.trim())refreshGold();};
-$('x-gold-refresh').onclick=async()=>{const ok=await fetchGold(true);goldStatus(ok?'':'live price unavailable');renderAll();toast(ok?'Gold price refreshed':'Live feed unavailable. Previous prices are not treated as live.');};
-setInterval(()=>{if(!document.hidden&&!goldPriceFresh(gset()))refreshGold();},60*60000);
+$('x-gold-refresh').onclick=async()=>{const ok=await fetchGold(true);goldStatus(ok?'':'live price unavailable');renderAll();toast(ok?'Gold price refreshed':(gset().px>0?'Could not reach the price service. Showing the last price received.':'Could not reach the price service. Type a price in Gold settings.'));};
+setInterval(()=>{if(!document.hidden)refreshGold();},15*60000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshGold();});
 
 /* ---------- gold price history: monthly price, your gold value, and what moved it ---------- */
 const HKEY='lg-goldhist-v1';
-const hget=()=>{try{return JSON.parse(localStorage.getItem(HKEY)||'{}')||{};}catch(e){return {};}};
-const hsave=o=>{try{localStorage.setItem(HKEY,JSON.stringify(Object.assign(hget(),o)));}catch(e){}};
+let _hs=null,_ho={};
+const hget=()=>{let s='{}';try{s=localStorage.getItem(HKEY)||'{}';}catch(e){}if(s!==_hs){_hs=s;try{_ho=JSON.parse(s)||{};}catch(e){_ho={};}}return _ho;};
+const hsave=o=>{try{localStorage.setItem(HKEY,JSON.stringify(Object.assign({},hget(),o)));}catch(e){}};
 async function fetchGoldHistory(force){
   const h=hget();if(!force&&h.at&&Date.now()-h.at<12*3600*1000)return false;
   try{
@@ -718,62 +755,69 @@ async function fetchGoldHistory(force){
       if(d.length>=7&&k>='2024-01'&&p>500&&p<20000){const s=sums[k]||(sums[k]=[0,0]);s[0]+=p;s[1]++;}});
     const m={};Object.keys(sums).forEach(k=>{m[k]=sums[k][0]/sums[k][1]/OZ;});   /* monthly average, USD per gram of 24k */
     if(!Object.keys(m).length)return false;
-    hsave({at:Date.now(),m:{...(h.m||{}),...m}});if(window.lgCfgChanged)window.lgCfgChanged();return true;
+    hsave({at:Date.now(),m:{...(h.m||{}),...m}});if(cfg())scheduleSync();return true;
   }catch(e){return false;}
 }
-/* Return a real observation when available, otherwise the last earlier observation.
-   Carry-forward is a valuation estimate, NEVER an observed historical market quote. */
+/* A month's price, per gram of 24k.
+   Known, in this order: a price you typed for the month, the market's monthly average (loaded by this phone,
+   by another phone, or by the ledger), and for the current month the latest price received.
+   A month with none of these is ESTIMATED and always marked as such: spread evenly between the nearest known
+   months, with what you paid for gold in a month used as a reference point when the market price is missing. */
 function observedMonthPx(k){
   const h=hget();
-  const candidates=[['manual',h.man&&h.man[k]],['market',h.m&&h.m[k]],['market',h.srv&&h.srv.months&&h.srv.months[k]],['snapshot',h.snap&&h.snap[k]]];
-  for(const [src,raw] of candidates){const px=Number(raw);if(Number.isFinite(px)&&px>0)return {px,src,asOf:k};}
+  const c=[['manual',h.man&&h.man[k]],['market',h.m&&h.m[k]],['market',h.srv&&h.srv.months&&h.srv.months[k]],['snapshot',h.snap&&h.snap[k]]];
+  for(const [src,raw] of c){const px=Number(raw);if(Number.isFinite(px)&&px>0)return {px,src};}
   return null;
 }
-function goldQuoteForMonth(k){
-  const exact=observedMonthPx(k);if(exact)return exact;
-  const h=hget(),nowK=toYMD(Date.now()).slice(0,7);
-  const keys=new Set([...Object.keys(h.man||{}),...Object.keys(h.m||{}),...Object.keys(h.srv&&h.srv.months||{}),...Object.keys(h.snap||{})]);
-  // Current cached quote has a real timestamp, so never apply it to earlier months.
-  const g=gset();const cachedK=g.at?toYMD(g.at).slice(0,7):null;
-  if(cachedK&&cachedK<=k&&Number(g.px)>0)keys.add(cachedK);
-  const earlier=[...keys].filter(x=>/^\d{4}-\d{2}$/.test(x)&&x<=k&&x<=nowK).sort().reverse();
-  for(const key of earlier){
-    const found=observedMonthPx(key);
-    if(found)return {...found,src:key===k?found.src:'carried-forward',asOf:key};
-    if(key===cachedK&&Number(g.px)>0)return {px:Number(g.px),src:key===k?'cached':'carried-forward',asOf:key};
+function monthPx(k){const q=observedMonthPx(k);return q?q.px:0;}
+const isEstSrc=s=>s==='est'||s==='paid';
+function quoteSeries(from,to,rows){
+  const nowK=toYMD(Date.now()).slice(0,7),paid={},g=gset(),out=[];
+  (rows||[]).forEach(r=>{if(!(r.name||'').includes('loan')&&(r.gold||0)>0&&r.goldPrice>0&&r.yyyyMM)(paid[r.yyyyMM]=paid[r.yyyyMM]||[]).push(r.goldPrice*24/rowKarat(r));});
+  for(let k=from;k<=to;k=addMonths(k,1)){
+    let q=observedMonthPx(k);
+    if(k===nowK&&!(q&&q.src==='manual')){const lv=px24();if(lv>0)q={px:lv,src:num(g.manual)>0?'manual':(goldPriceFresh(g)?'live':'cached')};}
+    if(!q&&paid[k])q={px:paid[k].reduce((a,b)=>a+b,0)/paid[k].length,src:'paid'};
+    out.push({k,px:q?q.px:0,src:q?q.src:'est',known:!!q});
   }
-  return null;
+  for(let i=0;i<out.length;i++){
+    if(out[i].known)continue;
+    let lo=i-1;while(lo>=0&&!out[lo].known)lo--;
+    let hi=i+1;while(hi<out.length&&!out[hi].known)hi++;
+    if(lo>=0&&hi<out.length)out[i].px=out[lo].px+(out[hi].px-out[lo].px)*(i-lo)/(hi-lo);
+    else if(lo>=0)out[i].px=out[lo].px;
+    else if(hi<out.length)out[i].px=out[hi].px;
+  }
+  return out;
 }
-function monthPx(k){return observedMonthPx(k)?.px||0;} // Actual observations only, for comparisons.
+/* the price used for "worth now": today's price, or the best figure for the current month when none was received */
+function pxNow(){
+  if(gset().mode!=='market')return 0;
+  const p=px24();if(p>0)return p;
+  const nk=toYMD(Date.now()).slice(0,7),h=hget(),ks=[...Object.keys(h.man||{}),...Object.keys(h.m||{}),...Object.keys((h.srv&&h.srv.months)||{}),...Object.keys(h.snap||{})].filter(k=>/^\d{4}-\d{2}$/.test(k)&&k<=nk).sort();
+  return ks.length?monthPx(ks[ks.length-1]):0;
+}
+/* One row per month from the first gold purchase: price, value of the gold held, and what moved it. */
+let _gmKey='',_gmVal=null;
 function goldMonthly(rows){
   const g=rows.filter(r=>!(r.name||'').includes('loan')&&(r.gold||0)>0&&r.yyyyMM);
   if(!g.length)return [];
+  const gs=gset(),key=dataRev+'|'+rows.length+'|'+g.length+'|'+_hs+'|'+gs.px+'|'+gs.at+'|'+gs.manual+'|'+gs.karat+'|'+gs.mode+'|'+toYMD(Date.now());
+  if(rows===allData&&key===_gmKey&&_gmVal)return _gmVal;
   const first=g.map(r=>r.yyyyMM).sort()[0],nowK=toYMD(Date.now()).slice(0,7);
-  const lastRow=g.map(r=>r.yyyyMM).sort().pop(),end=nowK>lastRow?nowK:lastRow,n=monthsBetween(first,end);
-  const base=[];
-  for(let i=0;i<=n;i++){
-    const k=addMonths(first,i);let q=goldQuoteForMonth(k);
-    if(k===nowK){
-      const gv=gset(),live=px24();
-      if(live>0&&gv.at&&toYMD(gv.at).slice(0,7)<=k){
-        const liveDate=toYMD(gv.at).slice(0,7);
-        if(!q||liveDate>=q.asOf)q={px:live,src:goldPriceFresh(gv)?'live':'cached',asOf:liveDate};
-      }
-    }
-    base.push({k,px:q?.px||0,src:q?.src||'unavailable',asOf:q?.asOf||null});
-  }
-  const out=[];let unitsPrev=0;
-  base.forEach(({k,px,src,asOf},i)=>{
-    let units=0,cost=0,grams=0,newUnits=0;
-    g.forEach(r=>{if(r.yyyyMM<=k){const u=r.gold*rowKarat(r)/24;units+=u;grams+=r.gold;cost+=r.gold*(r.goldPrice||0);if(r.yyyyMM===k)newUnits+=u;}});
-    const value=px?units*px:null;
-    const ly=monthPx(addMonths(k,-12)),dec=monthPx(`${+k.slice(0,4)-1}-12`);
-    const prior=base[i-1];
-    out.push({k,px:px||null,src,asOf,grams,cost,units,value,
-      mom:(px&&prior?.px)?px/prior.px-1:null,yoy:(px&&ly)?px/ly-1:null,ytd:(px&&dec)?px/dec-1:null,
-      priceEffect:(px&&prior?.px)?unitsPrev*(px-prior.px):null,bought:px?newUnits*px:null});
+  const lastRow=g.map(r=>r.yyyyMM).sort().pop(),end=nowK>lastRow?nowK:lastRow;
+  let base=quoteSeries(first,end,g);const out=[];let unitsPrev=0;
+  if(!base.some(b=>b.known&&b.src!=='paid'))base=base.map(b=>({k:b.k,px:0,src:'cost'}));   /* no price from anywhere: keep gold at what was paid, and say so */
+  base.forEach(({k,px,src},i)=>{
+    let units=0,cost=0,grams=0,newUnits=0,newCost=0;
+    g.forEach(r=>{if(r.yyyyMM<=k){const u=r.gold*rowKarat(r)/24;units+=u;grams+=r.gold;cost+=r.gold*(r.goldPrice||0);if(r.yyyyMM===k){newUnits+=u;newCost+=r.gold*(r.goldPrice||0);}}});
+    const prior=i?base[i-1].px:0,ly=monthPx(addMonths(k,-12)),dec=monthPx(`${+k.slice(0,4)-1}-12`);
+    out.push({k,px:px||null,src:px?src:'cost',est:!px||isEstSrc(src),grams,cost,units,value:px?units*px:cost,
+      mom:(px&&prior)?px/prior-1:null,yoy:(px&&ly)?px/ly-1:null,ytd:(px&&dec)?px/dec-1:null,
+      priceEffect:px?(i&&prior?unitsPrev*(px-prior):0):null,bought:px?newUnits*px:null,newCost});
     unitsPrev=units;
   });
+  if(rows===allData){_gmKey=key;_gmVal=out;}
   return out;
 }
 window.lgGoldMonthly=goldMonthly;window.lgGset=gset;
@@ -791,15 +835,11 @@ document.getElementById('variance-section').insertAdjacentHTML('beforebegin',`<d
 const pcell=v=>v==null?'<td class="num" data-v="">—</td>':`<td class="num ${v>=0?'pos':'neg'}" data-v="${v}">${v>=0?'▲':'▼'} ${Math.abs(v*100).toFixed(1)}%</td>`;
 /* price per month, also for the months before the first purchase, as far back as the history goes */
 function priceSeries(){
-  const h=hget(),known=[...Object.keys(h.m||{}),...Object.keys((h.srv&&h.srv.months)||{}),...Object.keys(h.man||{}),...Object.keys(h.snap||{})].filter(k=>/^\d{4}-\d{2}$/.test(k)).sort();
-  const g=gset();if(g.at&&Number(g.px)>0)known.push(toYMD(g.at).slice(0,7));
+  const h=hget(),nk=toYMD(Date.now()).slice(0,7);
+  const known=[...Object.keys(h.m||{}),...Object.keys((h.srv&&h.srv.months)||{}),...Object.keys(h.man||{}),...Object.keys(h.snap||{}),...allData.filter(d=>isGoldRow(d)&&d.goldPrice>0&&d.yyyyMM).map(d=>d.yyyyMM)].filter(k=>/^\d{4}-\d{2}$/.test(k)&&k<=nk).sort();
+  if(px24()>0)known.push(nk);
   if(!known.length)return [];
-  const nk=toYMD(Date.now()).slice(0,7),out=[];
-  for(let k=known.sort()[0];k<=nk;k=addMonths(k,1)){
-    const q=goldQuoteForMonth(k);if(!q)continue;
-    out.push({k,...q});
-  }
-  return out;
+  return quoteSeries(known.sort()[0],nk,allData).filter(r=>r.px>0);
 }
 const rangeN=()=>({'6m':6,'1y':12,'2y':24,'all':999}[GV.range]||12);
 function renderGoldChart(){
@@ -809,7 +849,7 @@ function renderGoldChart(){
   $('xg-series').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.s===GV.series));
   $('xg-series').hidden=!all.length;
   const mine=GV.series==='mine'&&all.some(r=>r.px);
-  const tag=r=>r.src==='live'?' · today':(r.src==='carried-forward'||r.src==='cached'?' · est.':'');
+  const tag=r=>r.src==='live'||r.src==='cached'?' · today':(isEstSrc(r.src)||r.src==='cost'?' *':'');
   const lab=r=>`${fmtMonthShort(r.k)} ’${r.k.slice(2,4)}${tag(r)}`;
   if(charts.goldhist){charts.goldhist.destroy();charts.goldhist=null;}
   const base={responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
@@ -823,16 +863,16 @@ function renderGoldChart(){
       options:Object.assign({},base,{scales:{y:{position:'left',ticks:{callback:x=>'$'+Number(x).toLocaleString()},grid:{color:'#F0F2F5'}},y1:{position:'right',ticks:{callback:x=>'$'+Number(x).toLocaleString()},grid:{display:false}},x:{grid:{display:false},ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:7}}},
         plugins:Object.assign({},base.plugins,{tooltip:{callbacks:{title:i=>fmtMonthFull(v[i[0].dataIndex].k),label:c=>` ${c.dataset.label}: ${c.raw==null?'—':(c.datasetIndex===2?signed0(c.raw):money0(c.raw))}`}}})})});
     const l=v[v.length-1],f=v[0],pe=v.reduce((s,r)=>s+(r.priceEffect||0),0);
-    $('x-goldhist-desc').textContent=`Worth ${l.value==null?'not valued':money0(l.value)} against ${money0(l.cost)} paid. Since ${lab(f)} the estimated price effect is ${signed0(pe)}. Carried-forward months use the latest earlier observed quote, not a new market observation.`;
+    $('x-goldhist-desc').textContent=`Worth ${money0(l.value)} against ${money0(l.cost)} paid. Since ${lab(f).replace(' *','')} the price added ${signed0(pe)} to what you hold.${v.some(r=>r.est)?' Months marked * use an estimated price.':''}`;
   }else if(ps.length){
     const v=ps.slice(-n);
     charts.goldhist=new Chart($('goldhist'),{type:'line',data:{labels:v.map(lab),datasets:[
-      {label:`${k}k per gram`,data:v.map(r=>r.px*k/24),borderColor:C.gold,backgroundColor:'rgba(185,137,47,0.12)',fill:true,tension:0.3,borderWidth:2.4,pointRadius:v.length>18?0:2.5},
+      {label:`${k}k per gram`,data:v.map(r=>r.px*k/24),borderColor:C.gold,backgroundColor:'rgba(185,137,47,0.12)',fill:true,tension:0.3,borderWidth:2.4,pointRadius:v.length>18?0:2.5,segment:{borderDash:c=>(v[c.p0DataIndex]&&isEstSrc(v[c.p0DataIndex].src))||(v[c.p1DataIndex]&&isEstSrc(v[c.p1DataIndex].src))?[5,4]:undefined}},
       ...(all.length?[{label:'Your purchases',data:v.map(r=>{const b=allData.filter(d=>isGoldRow(d)&&d.yyyyMM===r.k&&d.goldPrice>0);return b.length?b.reduce((s,d)=>s+d.goldPrice*k/(kOf(d)||gset().karat),0)/b.length:null;}),borderColor:C.ink,backgroundColor:C.ink,pointRadius:5,pointStyle:'rectRot',showLine:false}]:[])]},
       options:Object.assign({},base,{scales:{y:{ticks:{callback:x=>'$'+Math.round(x)},grid:{color:'#F0F2F5'}},x:{grid:{display:false},ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:7}}},
         plugins:Object.assign({},base.plugins,{tooltip:{callbacks:{title:i=>fmtMonthFull(v[i[0].dataIndex].k),label:c=>` ${c.dataset.label}: ${c.raw==null?'—':money2(c.raw)}`}}})})});
     const l=v[v.length-1],f=v[0],hi=v.reduce((a,r)=>r.px>a.px?r:a,v[0]),lo=v.reduce((a,r)=>r.px<a.px?r:a,v[0]);
-    $('x-goldhist-desc').textContent=`${k}k gold went from ${money2(f.px*k/24)} to ${money2(l.px*k/24)} per gram since ${lab(f).replace('*','')} (${l.px>=f.px?'+':'−'}${Math.abs((l.px/f.px-1)*100).toFixed(1)}%). High ${money2(hi.px*k/24)} in ${lab(hi).replace(/\*| · today/g,'')}, low ${money2(lo.px*k/24)} in ${lab(lo).replace(/\*| · today/g,'')}.${all.length?' Diamonds mark what you paid.':''}`;
+    $('x-goldhist-desc').textContent=`${k}k gold went from ${money2(f.px*k/24)} to ${money2(l.px*k/24)} per gram since ${lab(f).replace(' *','')} (${l.px>=f.px?'+':'−'}${Math.abs((l.px/f.px-1)*100).toFixed(1)}%). High ${money2(hi.px*k/24)} in ${lab(hi).replace(/\*| · today/g,'')}, low ${money2(lo.px*k/24)} in ${lab(lo).replace(/\*| · today/g,'')}.${all.length?' Diamonds mark what you paid.':''}`;
   }else $('x-goldhist-desc').textContent='No price history yet. It loads by itself when the app can reach the price services.';
   /* month by month: your holding months, or the price alone before you hold any */
   const rowsT=(all.length?all:ps.map((r,i)=>({k:r.k,px:r.px,src:r.src,mom:i?r.px/ps[i-1].px-1:null,yoy:monthPx(addMonths(r.k,-12))?r.px/monthPx(addMonths(r.k,-12))-1:null,ytd:monthPx(`${+r.k.slice(0,4)-1}-12`)?r.px/monthPx(`${+r.k.slice(0,4)-1}-12`)-1:null,value:null,priceEffect:null,bought:null}))).slice(-n);
@@ -841,9 +881,9 @@ function renderGoldChart(){
     <td class="num" data-v="${r.value==null?'':r.value}">${r.value==null?'—':money0(r.value)}</td>
     <td class="num ${r.priceEffect==null?'':(r.priceEffect>=0?'pos':'neg')}" data-v="${r.priceEffect==null?'':r.priceEffect}">${r.priceEffect==null?'—':signed0(r.priceEffect)}</td>
     <td class="num" data-v="${r.bought||0}">${r.bought?signed0(r.bought):'—'}</td></tr>`).join('');
-  const h=hget(),nm=Math.max(h.m?Object.keys(h.m).length:0,h.srv&&h.srv.months?Object.keys(h.srv.months).length:0),est=rowsT.some(r=>!r.px);
-  $('x-goldhist-note').textContent=`Prices are per gram of ${k}k. `+(nm?`Past months use the market price for the month (${nm} months loaded); the current month uses today's price. `:'Missing months use the last earlier recorded market price where available (carried-forward estimate); no purchase prices are substituted. ')
-    +(est?'A * marks a month without verified market history. ':'')+'Price effect is what the gold you already held gained or lost; Bought is gold added that month.';
+  const h=hget(),nm=Math.max(h.m?Object.keys(h.m).length:0,h.srv&&h.srv.months?Object.keys(h.srv.months).length:0),est=rowsT.filter(r=>r.est||isEstSrc(r.src)||!r.px).length;
+  $('x-goldhist-note').textContent=`Prices are per gram of ${k}k. `+(nm?`Past months use the market's average price for the month (${nm} months loaded); the current month uses the latest price. `:'The market price history has not loaded yet, so past months are estimated from the prices you have. ')
+    +(est?`${est} month${est>1?'s are':' is'} marked *: no market price was available, so the price is an estimate spread between the nearest known prices (what you paid counts as a reference). Tap such a month to type its real price. `:'')+'Price effect is what the gold you already held gained or lost; Bought is gold added that month.';
   /* purchases */
   const lots=allData.filter(isGoldRow).sort((a,b)=>b.sortTs-a.sortTs);
   $('x-lots-h').hidden=$('x-lots-box').hidden=!lots.length;
@@ -863,20 +903,17 @@ $('x-gold-table').addEventListener('click',e=>{
   if(v===null)return;
   const man=Object.assign({},hget().man||{}),n=num(v);
   if(n>20&&n<1000)man[tr.dataset.k]=n;else if(String(v).trim()==='')delete man[tr.dataset.k];else{toast('That price does not look right. Use USD per gram of 24k gold.');return;}
-  hsave({man});renderAll();
+  hsave({man});window.lgCfgChanged();renderAll();
 });
 $('x-gh-retry').onclick=()=>{fetchGoldHistory(true).then(ok=>{toast(ok?'Price history loaded':'Could not load price history. Try again later.',false);renderAll();});};
 const prevRA=renderAll;
 renderAll=function(){prevRA();try{goldStatus();renderGoldChart();}catch(e){console.error(e);}};
-// Refresh already scheduled above; avoid duplicate API calls.
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!goldPriceFresh(gset()))refreshGold();});
 setInterval(()=>{if(!document.hidden)fetchGoldHistory().then(ok=>{if(ok&&!busy())renderAll();});},3600*1000);
 
 /* ---------- settings shared between phones through the ledger ----------
    Each shared setting carries its own "last changed" time; the newest one wins on every phone. */
 const SHU='lg-shu-v1',SHS='lg-shs-v1';
 const SH={
-  fullDataConfig:{get:()=>{const o={...CFG};delete o.emails;return o;},set:v=>{if(v&&typeof v==='object'){const keep=CFG.emails;CFG={...CFG,...v};if(keep)CFG.emails=keep;}}},
   people:{get:()=>(CFG.people&&CFG.people.length?CFG.people:null),set:v=>{CFG.people=Array.isArray(v)?v:[];}},
   title:{get:()=>CFG.title||null,set:v=>{CFG.title=v||'';}},
   goal:{get:()=>(CFG.goal>0?+CFG.goal:null),set:v=>{CFG.goal=+v||0;}},
@@ -885,9 +922,9 @@ const SH={
   goldMode:{get:()=>gset().mode,set:v=>{gsave({mode:v==='cost'?'cost':'market'});}},
   goldManual:{get:()=>gset().manual||null,set:v=>{gsave({manual:v||''});}},
   goldMan:{get:()=>{const m=hget().man;return m&&Object.keys(m).length?m:null;},set:v=>{hsave({man:v||{}});}},
-  goldHistory:{get:()=>{const h=hget();return {m:h.m||{},at:h.at||0};},set:v=>{if(v&&typeof v==='object'&&v.m){const old=hget();if((+v.at||0)>=(+old.at||0))hsave({m:v.m,at:v.at||0});}}},
-  delivery:{get:()=>deliveryPrefs(),set:v=>{if(v&&typeof v==='object'){localStorage.setItem('lg-delivery-v1',JSON.stringify(v));drawDelivery();}}},
-  appUrl:{get:()=>location.origin+location.pathname,set:()=>{}}
+  /* closed months of market history: a phone that could load it shares it with the phones that could not */
+  goldHistory:{get:()=>{const m=hget().m||{},nk=toYMD(Date.now()).slice(0,7),o={};Object.keys(m).sort().forEach(k=>{if(k<nk&&m[k]>0)o[k]=Math.round(m[k]*1000)/1000;});return Object.keys(o).length?{m:o}:null;},
+    set:v=>{if(v&&typeof v==='object'&&v.m){const mine=hget().m||{},o={};Object.keys(v.m).forEach(k=>{const p=Number(v.m[k]);if(/^\d{4}-\d{2}$/.test(k)&&p>10&&p<700)o[k]=p;});hsave({m:Object.assign(o,mine)});}}},
 };
 const jget=k=>{try{return JSON.parse(localStorage.getItem(k)||'{}')||{};}catch(e){return {};}};
 const jset=(k,o)=>{try{localStorage.setItem(k,JSON.stringify(o));}catch(e){}};
@@ -900,24 +937,36 @@ function shStamp(){
 }
 /* take newer settings from the ledger, and return the ones this phone should send back */
 function shMerge(reply){
-  if(!reply||typeof reply.settings!=='object'||!reply.settings){shared.ok=false;return null;}
-  shared.ok=true;shared.backupAt=+reply.backupAt||0;
-  // On first Google connection, remote settings must win over device defaults.
-  const R=reply.settings;
-  // Do not stamp defaults before checking the remote: that can overwrite another device.
-  const u=jget(SHU),s=jget(SHS),out={};let applied=false;
+  if(!reply||typeof reply.settings!=='object'||!reply.settings){shared.ok=false;shared.api=0;return null;}
+  shared.ok=true;shared.api=+reply.api||1;shared.backupAt=+reply.backupAt||0;
+  const R=reply.settings;let first=false;
+  try{first=localStorage.getItem(SHU)==null;}catch(e){}
+  if(!first)shStamp();                       /* catch every change made on this phone since the last sync */
+  const u=jget(SHU),s=jget(SHS),out={},now=Date.now();let applied=false;
+  const take=(k,r,ru)=>{
+    try{window.lgApplyingRemoteSettings=true;SH[k].set(r.v===''||r.v==null?null:JSON.parse(r.v));
+      const v=SH[k].get();s[k]=v==null?'':JSON.stringify(v);u[k]=ru;applied=true;}
+    catch(e){console.warn('Setting not applied:',k,e);}
+    finally{window.lgApplyingRemoteSettings=false;}
+  };
   Object.keys(SH).forEach(k=>{
-    const r=R[k],lu=+u[k]||0,ru=r?(+r.u||0):0;
-    if(r&&ru>lu){try{window.lgApplyingRemoteSettings=true;SH[k].set(r.v===''||r.v==null?null:JSON.parse(r.v));s[k]=r.v||'';u[k]=ru;applied=true;}catch(e){console.warn('Settings restore failed for',k,e);}finally{window.lgApplyingRemoteSettings=false;}}
+    const r=R[k],ru=r?(+r.u||0):0;
+    if(first){
+      /* first time this phone meets this ledger: what the ledger holds wins, the phone only fills the gaps */
+      if(r&&ru>0)take(k,r,ru);
+      else{const v=SH[k].get(),j=v==null?'':JSON.stringify(v);s[k]=j;u[k]=j===''?0:now;if(j!=='')out[k]={v:j,u:now};}
+      return;
+    }
+    const lu=+u[k]||0;
+    if(r&&ru>lu)take(k,r,ru);
     else if(lu>ru&&(s[k]||'')!=='')out[k]={v:s[k],u:lu};
     else if(lu>ru&&r)out[k]={v:'',u:lu};
   });
-  if(applied){try{localStorage.setItem(CFGKEY,JSON.stringify(CFG));}catch(e){}jset(SHU,u);jset(SHS,s);_ppl=null;shared.applied=true;}
-  // First-ever ledger: persist its initial settings, but never overwrite remote keys.
-  if(!Object.keys(R).length && !Object.keys(u).length){shStamp();const initial=jget(SHU),values=jget(SHS);Object.keys(initial).forEach(k=>{if(values[k]!=='')out[k]={v:values[k],u:initial[k]};});}
+  jset(SHU,u);jset(SHS,s);
+  if(applied){try{localStorage.setItem(CFGKEY,JSON.stringify(CFG));}catch(e){}_ppl=null;shared.applied=true;}
   return Object.keys(out).length?out:null;
 }
-const shared={ok:null,backupAt:0,applied:false};
+const shared={ok:null,api:0,backupAt:0,applied:false};
 /* price help from the ledger: used when this phone cannot reach the price services itself */
 function srvGold(reply){
   const g=reply&&reply.gold;if(!g||typeof g!=='object')return;
@@ -925,7 +974,7 @@ function srvGold(reply){
   const px=Number(g.px);
   hsave({srv:{px:px>500&&px<20000?px/OZ:0,at:+g.at||0,months}});
 }
-window.lgCfgChanged=()=>{shStamp();scheduleSync();};
+window.lgCfgChanged=()=>{if(window.lgApplyingRemoteSettings)return;markDirty();scheduleSync();try{status();}catch(e){}};
 
 /* ---------- views: tabs, source labels, sortable tables, scorecard, insights, explore ---------- */
 (function(){
@@ -1035,7 +1084,7 @@ function applyView(){
 }
 function goView(v,scrollId){
   view=v;try{localStorage.setItem('lg-view-v2',v);}catch(e){}
-  applyView();renderRepCard();
+  applyView();renderRepCard();renderNotes();
   if(v==='explore')renderExplore();
   const el=scrollId&&$(scrollId);
   const y=el?el.getBoundingClientRect().top+window.scrollY-($('x-tabs').offsetHeight+(document.querySelector('header')||{offsetHeight:0}).offsetHeight+18)
@@ -1240,7 +1289,7 @@ function renderTop(){
   const end=R.b,mk=toYMD(Math.min(end,Date.now()+1)-1).slice(0,7);
   let cash=0,loan=0,goldCost=0;rows.forEach(d=>{if(!(d.sortTs<end))return;if(isLoanRow(d))loan-=d.usd||0;else{cash+=d.usd||0;goldCost+=(d.gold||0)*(d.goldPrice||0);}});
   let gold=goldCost;
-  try{const gm=(window.lgGoldMonthly?window.lgGoldMonthly(rows):[]).filter(r=>r.k<=mk&&r.value!=null);if(gm.length&&px24()>0)gold=gm[gm.length-1].value;}catch(e){}
+  try{const gm=(window.lgGoldMonthly?window.lgGoldMonthly(rows):[]).filter(r=>r.k<=mk&&r.px);if(gm.length&&gset().mode==='market')gold=gm[gm.length-1].value;}catch(e){}
   donut('xs-p2',[cash,gold],[C.cash,C.gold]);
   const net=cash+gold-loan;
   $('xs-p2c').innerHTML=`<b>${money0(net)}</b><span>net worth</span>`;
@@ -1523,14 +1572,14 @@ const XV=[
   build(x){
    const all=(window.lgGoldMonthly?window.lgGoldMonthly(allData):[]).filter(r=>r.px),k=gset().karat,list=all.filter(r=>!x.year||r.k.startsWith(x.year));
    if(!list.length)return {cols:['Month'],rows:[],insight:'Add a gold entry to see gold prices here.',note:'',chart:null};
-   const tag=r=>r.src==='live'?' · today':(r.src==='carried-forward'||r.src==='cached'?' · est.':'');
+   const tag=r=>r.src==='live'||r.src==='cached'?' · today':(r.est?' *':'');
    const rows=[...list].reverse().map(r=>({cells:[cell(`<strong>${lbl(r.k)}${tag(r)}</strong>`,r.k.replace('-','')),cell(money2(r.px),r.px,'num'),cell(money2(r.px*k/24),r.px*k/24,'num'),pC(r.mom),pC(r.yoy),pC(r.ytd)]}));
    const l=list[list.length-1],f0=list[0];
    return {cols:['Month','24k / g',`${k}k / g`,'vs last month','vs last year','Year to date'],rows,
     insight:`Gold is at <b>${money2(l.px*k/24)}</b> per gram of ${k}k, ${pctTxt(l.px/f0.px-1)} since ${lbl(f0.k)}${l.mom!=null?`, ${pctTxt(l.mom)} on last month`:''}.`,
-    note:'Observed months show recorded market quotes. Missing months carry forward the last earlier quote as an explicitly labeled valuation estimate; they are not new market observations. Current-month prices may change.',
+    note:'Market data. Past months are the market’s average price for the month; the current month is the latest price. A * marks a month with no market price: its price is an estimate between the nearest known prices. Tap that month in the Gold tab to type the real one.',
     chart:{type:'line',data:{labels:list.map(r=>lbl(r.k)),datasets:[
-      {label:`${k}k per gram`,data:list.map(r=>r.px*k/24),borderColor:C.gold,backgroundColor:'rgba(185,137,47,0.12)',fill:true,tension:.3,borderWidth:2.4,pointRadius:list.map(r=>r.src==='market'||r.src==='live'||r.src==='manual'?2.5:0)}]},
+      {label:`${k}k per gram`,data:list.map(r=>r.px*k/24),borderColor:C.gold,backgroundColor:'rgba(185,137,47,0.12)',fill:true,tension:.3,borderWidth:2.4,pointRadius:list.map(r=>r.est?0:2.5)}]},
       options:(()=>{const o=opt();o.scales.y.ticks.callback=v=>'$'+Math.round(v);o.plugins.tooltip.callbacks={label:c=>` ${c.dataset.label}: ${money2(c.raw)}`};return o;})()}};
   }},
  {id:'goldval',src:'mix',grp:'mkt',title:'Your gold: worth vs paid',desc:'Your grams at each month’s market price, against what you paid, with the price effect.',years:'all',
@@ -1541,7 +1590,7 @@ const XV=[
    const l=list[list.length-1],pe=list.reduce((s,r)=>s+(r.priceEffect||0),0);
    return {cols:['Month','Grams','Paid','Worth','Gain','Price effect','Bought'],rows,
     insight:`Your gold is worth <b>${money0(l.value)}</b> against ${money0(l.cost)} paid (${pctTxt(l.value/l.cost-1)}). Price moves ${x.year?`in ${x.year} `:''}added <b>${signed0(pe)}</b>.`,
-    note:'Your grams (our data) valued at observed prices or explicitly labeled carried-forward estimates, each entry at its own purity. Price effect is the gain or loss on gold you already held; Bought is gold added that month at that month’s price.',
+    note:'Your grams (our data) valued at each month’s price (market data, or an estimate where the Gold tab shows a *), each entry at its own purity. Price effect is the gain or loss on gold you already held; Bought is gold added that month at that month’s price.',
     chart:{type:'bar',data:{labels:list.map(r=>lbl(r.k)),datasets:[
       {type:'line',label:'Worth at market',data:list.map(r=>r.value),borderColor:C.cash,borderWidth:2.4,pointRadius:2,tension:.3},
       {type:'line',label:'What you paid',data:list.map(r=>r.cost),borderColor:'#9AA6B1',borderDash:[5,4],borderWidth:1.8,pointRadius:0,stepped:true},
@@ -1646,7 +1695,7 @@ function renderSettings(){
   if(a!=='x-goal-in')$('x-goal-in').value=CFG.goal>0?String(CFG.goal):'';
   if(a!=='x-start-in')$('x-start-in').value=startSaving()==null?'':String(startSaving());
   const fmk=firstMonth();$('x-start-m').textContent=fmk?`, ${fk(fmk)}`:'';
-  $('x-set-hint').textContent=cfg()?(shared.ok===false?'not shared yet: update the ledger script':(shared.ok?'shared with everyone signed in':'')):'saved on this phone';
+  $('x-set-hint').textContent=cfg()?(shared.ok===false?'on this phone only: update the ledger script':(shared.ok?(isDirty()?'saving to your ledger…':'saved in your ledger'):'')):'saved on this phone';
 }
 function cfgChanged(){renderAll();}
 $('x-addp').onclick=()=>{const n=addPerson($('x-newp').value);if(n){$('x-newp').value='';toast(`${n} added`,false);cfgChanged();}};
@@ -1666,28 +1715,175 @@ $('x-ppl').addEventListener('click',e=>{
   if(n){snapshot();allData.forEach(r=>{if(ownerKey(r.name)===ownerKey(old))r.name=nn.toLowerCase()+(isLoanName(r.name)?' - loan':'');});}
   P[i]=nn;saveCfg({people:P});if(n){save();status();}cfgChanged();toast(`Renamed to ${nn}${n?` in ${n} entr${n>1?'ies':'y'}`:''}`,!!n);
 });
-/* Account delivery preferences: stored in the same settings object and synced by the ledger settings adapter. */
-$('x-settings').insertAdjacentHTML('beforeend', `<div class="x-set" id="x-delivery" style="margin-top:16px;border-top:1px solid var(--line);padding-top:16px">
- <h3 style="font-family:Newsreader,serif;font-size:22px;margin:0 0 8px">Notifications</h3>
- <p class="x-note">Notifications are enabled by default in preferences. Allow permission to test on this device. Scheduled push when the app is closed still needs a push server.</p>
- <label class="x-label"><input type="checkbox" id="x-push-enabled"> Monthly push notification enabled</label>
- <label class="x-label" for="x-push-hour">Preferred notification hour (local)</label>
- <select class="x-input" id="x-push-hour"><option value="8">08:00</option><option value="9">09:00</option><option value="10">10:00</option><option value="12">12:00</option><option value="18">18:00</option></select>
- <div class="x-btns"><button type="button" id="x-push-test">Test notification on this device</button></div>
- <p id="x-push-result" class="x-note" role="status"></p>
- </div>`);
-function deliveryPrefs(){try{return {push:true,hour:9,...JSON.parse(localStorage.getItem('lg-delivery-v1')||'{}')};}catch{return {push:true,hour:9};}}
-function saveDelivery(p){const n={...deliveryPrefs(),...p};localStorage.setItem('lg-delivery-v1',JSON.stringify(n));if(window.lgCfgChanged)window.lgCfgChanged();}
-function drawDelivery(){const p=deliveryPrefs();$('x-push-enabled').checked=!!p.push;$('x-push-hour').value=String(p.hour||9);}
-['x-push-enabled','x-push-hour'].forEach(id=>$(id).addEventListener('change',()=>{saveDelivery({push:$('x-push-enabled').checked,hour:+$('x-push-hour').value});toast('Notification preference saved. Scheduled push needs server activation.',false);}));
+/* ---------- notifications ----------
+   Five alerts, each worked out on the phone from the ledger itself. They appear as cards at the top of Overview and,
+   once notifications are allowed, as system notifications whenever the app is open or is brought back.
+   A notification while the app is fully closed needs a push server; the calendar reminders cover the two dated ones without one. */
+const NKEY='lg-notes-v1',DKEY='lg-delivery-v1';
+const NTYPES=[['report','Monthly report is ready','On the 1st, with the month’s saving, net worth and goal.'],
+ ['partner','Someone else added an entry','As soon as their entry reaches this phone.'],
+ ['nudge','Nothing saved yet this month','A reminder on the day you choose, with what the goal needs.'],
+ ['goal','Goal milestones','When you pass 25%, 50%, 75%, 90% and 100% of the year’s target.'],
+ ['gold','Gold moves 3% or more','Only if you hold gold, with what it did to its value.']];
+function deliveryPrefs(){const d={push:true,hour:9,nudgeDay:10,report:true,partner:true,nudge:true,goal:true,gold:true};try{return Object.assign(d,JSON.parse(localStorage.getItem(DKEY)||'{}')||{});}catch(e){return d;}}
+function saveDelivery(p){try{localStorage.setItem(DKEY,JSON.stringify(Object.assign(deliveryPrefs(),p)));}catch(e){}}
+const nget=()=>{try{return JSON.parse(localStorage.getItem(NKEY)||'null');}catch(e){return null;}};
+const nset=o=>{try{localStorage.setItem(NKEY,JSON.stringify(o));}catch(e){}};
+const canNotify=()=>('Notification' in window)&&('serviceWorker' in navigator);
+const isIOS=()=>/iPhone|iPad|iPod/.test(navigator.userAgent);
+$('x-settings').insertAdjacentHTML('beforeend',`<div class="x-set" id="x-delivery" style="margin-top:14px">
+ <div class="x-label" style="margin-top:0">Notifications on this phone</div>
+ <p class="x-note" id="x-push-state" style="margin-top:0"></p>
+ <div class="x-btns" style="margin-top:8px"><button type="button" id="x-push-on">Allow notifications</button><button type="button" id="x-push-test">Send a test</button></div>
+ <div id="x-push-list" style="margin-top:12px">${NTYPES.map(([id,l,s])=>`<label class="x-nrow"><input type="checkbox" data-n="${id}"><span><b>${l}</b><em>${s}</em></span></label>`).join('')}</div>
+ <label class="x-label" for="x-nudge-day">Remind me if nothing is saved by the</label>
+ <select class="x-input" id="x-nudge-day">${[5,10,15,20,25].map(d=>`<option value="${d}">${d}th of the month</option>`).join('')}</select>
+ <div class="x-label">When the app is closed</div>
+ <p class="x-note" style="margin-top:0">A web app on iPhone cannot wake itself up without a push server. Calendar reminders do the same job for the two dated alerts: your phone reminds you on the 1st that the report is ready, and on your reminder day to add your savings. Tapping the reminder opens the app.</p>
+ <div class="x-btns" style="margin-top:8px"><button type="button" id="x-cal">Add reminders to my calendar</button></div>
+ <p id="x-push-result" class="x-note" role="status"></p></div>`);
+const stn=document.createElement('style');
+stn.textContent=`.x-nrow{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.x-nrow:last-child{border-bottom:0}.x-nrow input{width:20px;height:20px;margin:1px 0 0;flex:0 0 20px;accent-color:var(--ink)}
+.x-nrow b{display:block;font-size:14px;font-weight:600}.x-nrow em{display:block;font-style:normal;font-size:12px;color:var(--muted);margin-top:1px}
+#x-notes{display:flex;flex-direction:column;gap:8px;margin:0 0 14px}
+.x-note-c{display:flex;align-items:flex-start;gap:10px;background:#FBF6EA;border:1px solid var(--gold);border-radius:14px;padding:11px 8px 11px 14px}
+.x-note-c div{flex:1;min-width:0;cursor:pointer}.x-note-c b{display:block;font-size:14px}.x-note-c span{display:block;font-size:12.5px;color:var(--ink-2);margin-top:2px;line-height:1.4}
+.x-note-c button{flex:0 0 auto;border:0;background:none;color:var(--muted);font-size:15px;padding:4px 8px;cursor:pointer}`;
+document.head.appendChild(stn);
+$('x-tabs').insertAdjacentHTML('afterend','<div id="x-notes" hidden></div>');
+function drawDelivery(){
+  const p=deliveryPrefs(),st=$('x-push-state');
+  $('x-push-list').querySelectorAll('input[data-n]').forEach(c=>{c.checked=p[c.dataset.n]!==false;});
+  $('x-nudge-day').value=String(p.nudgeDay||10);
+  let t,on=false;
+  if(!canNotify())t=isIOS()&&!navigator.standalone?'To get notifications on iPhone, add this app to your Home Screen (Share, then Add to Home Screen) and open it from there. Until then the alerts show as cards at the top of Overview.':'This browser does not support notifications. The alerts show as cards at the top of Overview.';
+  else if(Notification.permission==='granted'){t='Notifications are allowed on this phone. Alerts arrive whenever the app is open or you come back to it.';on=true;}
+  else if(Notification.permission==='denied')t='Notifications are blocked for this app in your phone’s settings. The alerts still show as cards at the top of Overview.';
+  else t='Allow notifications to get the alerts below on this phone. They also show as cards at the top of Overview.';
+  st.textContent=t;$('x-push-on').hidden=on||!canNotify()||Notification.permission==='denied';$('x-push-test').hidden=!on;
+}
+$('x-push-list').addEventListener('change',e=>{const c=e.target.closest('input[data-n]');if(c){saveDelivery({[c.dataset.n]:c.checked});toast('Saved',false);}});
+$('x-nudge-day').onchange=e=>{saveDelivery({nudgeDay:+e.target.value});toast('Saved',false);};
+async function showSys(n){
+  try{
+    if(!canNotify()||Notification.permission!=='granted'||!deliveryPrefs().push)return false;
+    const reg=await navigator.serviceWorker.ready;
+    await reg.showNotification(n.title,{body:n.body,icon:'icon-192.png',badge:'icon-192.png',tag:'lg-'+n.id,data:{url:location.origin+location.pathname+(n.hash||'')}});
+    return true;
+  }catch(e){return false;}
+}
+$('x-push-on').onclick=async()=>{
+  try{const r=await Notification.requestPermission();drawDelivery();
+    if(r==='granted'){await showSys({id:'hello',title:'Notifications are on',body:'You will hear from your ledger here.'});runNotes();}
+    else $('x-push-result').textContent='Not allowed. You can change this later in your phone’s settings.';
+  }catch(e){$('x-push-result').textContent='Could not ask for permission: '+e.message;}
+};
 $('x-push-test').onclick=async()=>{
- const el=$('x-push-result');if(!('Notification' in window)||!('serviceWorker' in navigator)){el.textContent='Notifications are not supported in this browser.';return;}
- if(/iPhone|iPad|iPod/.test(navigator.userAgent)&&!window.navigator.standalone){el.textContent='On iPhone, first add this site to your Home Screen and open it from there.';return;}
- try{const permission=await Notification.requestPermission();if(permission!=='granted'){el.textContent='Notification permission was not granted.';return;}
- const reg=await navigator.serviceWorker.ready;await reg.showNotification('Savings Ledger · Test notification',{body:'Your monthly report notification preview. This is a device test, not a scheduled push.',icon:'icon-192.png',tag:'savings-ledger-test',data:{url:location.origin+location.pathname+'#report='+new Date().toISOString().slice(0,7)}});
- el.textContent='Local notification displayed. Scheduled push is not active until a server is configured.';
- }catch(e){el.textContent='Notification test failed: '+e.message;}
-};drawDelivery();
+  const lc=lastClosedMonth(),ok=await showSys(lc?reportNote(lc):{id:'test',title:'Savings Ledger',body:'This is what an alert looks like.'});
+  $('x-push-result').textContent=ok?'Sent. If you do not see it, check that notifications for this app are allowed in your phone’s settings.':'Could not send it. Allow notifications first.';
+};
+/* reminders in the phone's own calendar: these fire with the app closed, with no server */
+$('x-cal').onclick=async()=>{
+  const p=deliveryPrefs(),url=location.origin+location.pathname,z=n=>String(n).padStart(2,'0'),now=new Date();
+  const stamp=`${now.getUTCFullYear()}${z(now.getUTCMonth()+1)}${z(now.getUTCDate())}T${z(now.getUTCHours())}${z(now.getUTCMinutes())}00Z`;
+  const next=d=>{const x=new Date(now.getFullYear(),now.getMonth(),d,p.hour||9);if(x<=now)x.setMonth(x.getMonth()+1);return `${x.getFullYear()}${z(x.getMonth()+1)}${z(x.getDate())}T${z(x.getHours())}0000`;};
+  const ev=(uid,day,sum,desc,link)=>['BEGIN:VEVENT',`UID:${uid}@savings-ledger`,`DTSTAMP:${stamp}`,`DTSTART:${next(day)}`,'DURATION:PT15M',`RRULE:FREQ=MONTHLY;BYMONTHDAY=${day}`,`SUMMARY:${sum}`,`DESCRIPTION:${desc} ${link}`,`URL:${link}`,'BEGIN:VALARM','ACTION:DISPLAY',`DESCRIPTION:${sum}`,'TRIGGER:PT0M','END:VALARM','END:VEVENT'];
+  const ics=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Savings Ledger//EN','CALSCALE:GREGORIAN',
+    ...ev('report',1,'Your savings report is ready','Open last month’s report:',url+'#report=last'),
+    ...ev('nudge',p.nudgeDay||10,'Add this month’s savings','Open the ledger:',url),'END:VCALENDAR'].join('\r\n');
+  const file=new File([ics],'savings-ledger-reminders.ics',{type:'text/calendar'});
+  try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'Savings Ledger reminders'});$('x-push-result').textContent='Choose Calendar to add the two monthly reminders.';return;}}catch(e){if(e&&e.name==='AbortError')return;}
+  const a=document.createElement('a');a.href=URL.createObjectURL(file);a.download=file.name;document.body.appendChild(a);a.click();a.remove();
+  $('x-push-result').textContent='Open the downloaded file to add the two monthly reminders to your calendar.';
+};
+/* the inbox of alerts, on Overview */
+function renderNotes(){
+  const el=$('x-notes'),s=nget(),list=(s&&s.inbox)||[];
+  if(!list.length||!allData.length||$('hero').hidden||view!=='overview'){el.hidden=true;el.innerHTML='';return;}
+  el.hidden=false;
+  el.innerHTML=list.slice(0,3).map(n=>`<div class="x-note-c" data-id="${esc(n.id)}"><div><b>${esc(n.title)}</b><span>${esc(n.body)}</span></div><button type="button" aria-label="Dismiss">✕</button></div>`).join('');
+}
+$('x-notes').addEventListener('click',e=>{
+  const c=e.target.closest('.x-note-c');if(!c)return;
+  const s=nget()||{},n=(s.inbox||[]).find(x=>x.id===c.dataset.id);
+  s.inbox=(s.inbox||[]).filter(x=>x.id!==c.dataset.id);nset(s);renderNotes();
+  if(e.target.closest('button')||!n)return;
+  const m=/^#report=(\d{4}-\d{2})$/.exec(n.hash||'');
+  if(m)openReport(m[1]);else if(n.view)goView(n.view);
+});
+function fire(s,n){
+  s.inbox=[Object.assign({at:Date.now()},n),...(s.inbox||[]).filter(x=>x.id!==n.id)].slice(0,6);
+  showSys(n);
+}
+function reportNote(k){
+  const D=reportData(k),c=D.check,t=computeAnalytics(allData),R=mRange(k),path=pathFor(R.y,t),cb=cumAt(t,k),gap=path?cb-path.at(k):null;
+  return {id:'report-'+k,title:`Your ${fk(k)} report is ready`,hash:'#report='+k,
+    body:`Saved ${money0(c.saved)} · net worth ${money0(c.net)}${gap==null?'':` · ${money0(Math.abs(gap))} ${gap>=0?'ahead of':'behind'} your goal`}. Tap to open it.`};
+}
+let partnerQueue=[];
+function notePartner(arrived){
+  if(!arrived.length||arrived.length>12||!deliveryPrefs().partner)return;
+  const recent=arrived.filter(r=>Date.now()-(+r.updated||0)<3*86400000);
+  if(recent.length)partnerQueue.push(...recent);
+}
+function runNotes(){
+  if(!allData.length)return;
+  const p=deliveryPrefs(),nk=nowKey(),now=new Date();
+  let s=nget();const firstRun=!s;if(!s)s={inbox:[]};
+  const t=computeAnalytics(allData),y=now.getFullYear(),path=pathFor(y,t),cb=cumAt(t,nk);
+  /* 1. monthly report */
+  const lc=lastClosedMonth();
+  if(p.report&&lc&&lc<nk&&(s.report||'')<lc){
+    let seen='';try{seen=localStorage.getItem('lg-report-seen')||'';}catch(e){}
+    if(seen<lc)showSys(reportNote(lc));   /* on screen, the report card at the top of Overview already says it */
+    s.report=lc;
+  }
+  /* 2. entries from another phone */
+  if(partnerQueue.length){
+    const q=partnerQueue;partnerQueue=[];
+    const who=[...new Set(q.map(r=>cap(ownerKey(r.name))||'Someone'))];
+    const what=r=>isLoanRow(r)?`a loan entry of ${money0(Math.abs(r.usd||0))}`:(r.gold>0?`${r.gold} g of gold`:`${(r.usd||0)<0?'a withdrawal of ':''}${money0(Math.abs(r.usd||0))}`);
+    fire(s,{id:'partner-'+q[0].id,view:'ledger',title:q.length===1?`${who[0]} added ${what(q[0])}`:`${q.length} new entries from ${who.join(' and ')}`,
+      body:q.length===1?`Dated ${(q[0].date||'').split(' ')[0]}. Net worth is now ${money0(t.net)}.`:`Together ${signed0(q.reduce((a,r)=>a+rowAmt(r),0))}. Net worth is now ${money0(t.net)}.`});
+  }
+  /* 3. nothing saved yet this month */
+  {const R0=mRange(nk);if(s.inbox&&allData.some(d=>d.sortTs>=R0.a&&d.sortTs<R0.b&&!isLoanRow(d)&&rowAmt(d)>0))s.inbox=s.inbox.filter(x=>x.id!=='nudge-'+nk);}
+  if(p.nudge&&now.getDate()>=(p.nudgeDay||10)&&(s.nudge||'')<nk&&firstMonth()<nk){
+    const R=mRange(nk),any=allData.some(d=>d.sortTs>=R.a&&d.sortTs<R.b&&!isLoanRow(d)&&rowAmt(d)>0);
+    if(!any){
+      const left=12-now.getMonth(),need=path?(path.goal-cb)/left:null;
+      fire(s,{id:'nudge-'+nk,title:`Nothing saved yet in ${fk(nk)}`,body:need>0?`Staying on your goal needs about ${money0(need)} a month for the ${left} month${left>1?'s':''} left.`:'Add this month’s savings when you have a minute.'});
+      s.nudge=nk;
+    }
+  }
+  /* 4. goal milestones */
+  if(path&&path.goal>0){
+    const pct=cb/path.goal*100,step=[100,90,75,50,25].find(x=>pct>=x)||0;s.goal=s.goal||{};
+    if(firstRun||s.goal[y]==null)s.goal[y]=step;
+    else if(step>s.goal[y]){
+      if(p.goal)fire(s,{id:`goal-${y}-${step}`,title:step>=100?`You reached your ${y} target`:`You passed ${step}% of your ${y} target`,
+        body:step>=100?`${money0(cb)} against a target of ${money0(path.goal)}. Well done.`:`${money0(cb)} of ${money0(path.goal)}, with ${money0(path.goal-cb)} to go.`});
+      s.goal[y]=step;
+    }else if(step<s.goal[y])s.goal[y]=step;
+  }
+  /* 5. gold moves */
+  const g=gset(),px=px24();
+  if(px>0&&goldPriceFresh(g)&&t.goldGrams>0){
+    if(!s.goldPx||firstRun){s.goldPx=px;s.goldAt=Date.now();}
+    else{const mv=px/s.goldPx-1;
+      if(Math.abs(mv)>=0.03){
+        if(p.gold){const d=new Date(s.goldAt||Date.now()),dv=t.gold-t.gold/(1+mv);
+          fire(s,{id:'gold-'+toYMD(Date.now()),view:'gold',title:`Gold is ${mv>=0?'up':'down'} ${Math.abs(mv*100).toFixed(1)}% since ${d.getDate()} ${MON[d.getMonth()]}`,body:`Your gold is worth ${money0(t.gold)}, ${signed0(dv)} from the move.`});}
+        s.goldPx=px;s.goldAt=Date.now();
+      }}
+  }
+  nset(s);renderNotes();
+}
+window.lgRunNotes=runNotes;
+drawDelivery();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){drawDelivery();setTimeout(()=>{try{runNotes();}catch(e){}},1500);}});
+setTimeout(()=>{try{runNotes();}catch(e){console.error(e);}},2500);
 $('x-title-in').onchange=e=>{saveCfg({title:e.target.value.trim()});cfgChanged();};
 $('x-goal-in').onchange=e=>{saveCfg({goal:num(e.target.value)});cfgChanged();toast('Target saved',false);};
 $('x-start-in').onchange=e=>{const v=e.target.value.trim();saveCfg({startSaving:v===''?null:num(v)});cfgChanged();toast('Saved',false);};
@@ -1708,141 +1904,150 @@ function reportMonths(){
   const fmk=firstMonth();if(!fmk)return [];
   const out=[];for(let k=nowKey();k>=fmk;k=addMonths(k,-1))out.push(k);return out;
 }
+/* what is held at the end of month k: cash, gold at what was paid, gold at that month's price, loans */
+function holdAt(rows,endTs,k,gmAll){
+  let cash=0,loan=0,cost=0,grams=0;
+  rows.forEach(d=>{if(!(d.sortTs<endTs))return;if(isLoanRow(d))loan-=d.usd||0;else{cash+=d.usd||0;cost+=(d.gold||0)*(d.goldPrice||0);grams+=d.gold||0;}});
+  let g=null;if(grams>0){for(const r of gmAll){if(r.k<=k)g=r;else break;}}
+  const market=gset().mode==='market'&&g&&g.px;
+  const worth=grams>0?(market?g.value:cost):0;
+  return {cash,loan,cost,grams,worth,net:cash+worth-loan,g:market?g:null};
+}
 function reportData(k){
   const rows=allData,t=computeAnalytics(rows),PP=people();
   JF=janF();
   const R=mRange(k),pk=addMonths(k,-1),lk=addMonths(k,-12),Rp=mRange(pk),Rl=mRange(lk);
   const first=Math.min(...rows.map(r=>r.sortTs).filter(Boolean));
   const C0=bucket(rows,R.a,R.b),P0=bucket(rows,Rp.a,Rp.b),L0=bucket(rows,Rl.a,Rl.b),hasPrev=Rp.b>first,hasLy=Rl.b>first;
-  const bal=balanceTo(rows,R.b),balP=balanceTo(rows,Rp.b),balL=balanceTo(rows,Rl.b);
   const y0=new Date(R.y,0,1).getTime(),Y0=bucket(rows,y0,R.b),YL=bucket(rows,new Date(R.y-1,0,1).getTime(),new Date(R.y-1,R.m,1).getTime()),hasYL=new Date(R.y-1,R.m,1).getTime()>first;
   const path=pathFor(R.y,t),cb=cumAt(t,k),gr=path?goalRatio(R.y,path,t,k,cb):null,gap=path?cb-path.at(k):null;
   const label=fk(k),partial=k===nowKey();
   const mom=hasPrev?pcOf(C0.saved,P0.saved):null,yoy=hasLy?pcOf(C0.saved,L0.saved):null,ytdYoy=hasYL?pcOf(Y0.saved,YL.saved):null;
-  /* gold at the end of the month */
-  let gm=null;try{gm=(window.lgGoldMonthly(rows)||[]).find(r=>r.k===k)||null;}catch(e){}
-  let cash=0,loan=0,goldCost=0,grams=0;
-  rows.forEach(d=>{if(!(d.sortTs<R.b))return;if(isLoanRow(d))loan-=d.usd||0;else{cash+=d.usd||0;goldCost+=(d.gold||0)*(d.goldPrice||0);grams+=d.gold||0;}});
-  const goldKnown=grams<=0||(gm&&gm.value!=null);const goldW=grams>0?(goldKnown?gm.value:null):0,net=goldKnown?cash+goldW-loan:null;
+  /* one set of figures for the screen and the PDF */
+  let gmAll=[];try{gmAll=goldMonthly(rows)||[];}catch(e){}
+  const H=holdAt(rows,R.b,k,gmAll),Hp=holdAt(rows,Rp.b,pk,gmAll),Hl=holdAt(rows,Rl.b,lk,gmAll);
+  const {cash,loan,grams}=H,goldCost=H.cost,goldW=H.worth,net=H.net,gm=H.g,kk=gset().karat;
+  let dep=0,goldIn=0,goldInG=0,loanMove=0;
+  rows.forEach(d=>{if(!(d.sortTs>=R.a&&d.sortTs<R.b))return;if(isLoanRow(d))loanMove+=d.usd||0;else{dep+=d.usd||0;goldIn+=(d.gold||0)*(d.goldPrice||0);goldInG+=d.gold||0;}});
+  const priceEff=(goldW-Hp.worth)-goldIn;                  /* what the price alone did, so the bridge always adds up */
+  const est=!!(gm&&gm.est);
   const D={k,label,partial,title:appTitle(),sections:[]};
   D.sub=`${partial?'Month in progress, figures so far. ':''}Prepared ${fd(Date.now())}.`;
+  D.check={net,open:Hp.net,dep,goldIn,loanMove,priceEff,goldW,goldCost,cash,loan,saved:C0.saved,ytd:Y0.saved};
   /* headline tiles */
+  const gainG=goldW-goldCost;
   D.sections.push({type:'tiles',tiles:[
     {l:`Saved in ${label}`,v:money0(C0.saved),s:hasPrev?`${pS(mom)} vs ${fk(pk)} (${money0(P0.saved)})`:'first month of the ledger',tone:tone(mom)},
-    {l:'Against last year',v:hasLy?pS(yoy):'n/a',s:hasLy?`${fk(lk)}: ${money0(L0.saved)}`:`no ${fk(lk)} in the ledger`,tone:tone(yoy)},
-    {l:'Balance at month end',v:net==null?'Unavailable':money0(net),s:hasPrev&&net!=null?`Estimated market valuation · ${label}`:'Market valuation where price is available',tone:''},
     {l:`Saved in ${R.y} so far`,v:money0(Y0.saved),s:hasYL?`${pS(ytdYoy)} vs the same months of ${R.y-1}`:`no ${R.y-1} to compare with`,tone:tone(ytdYoy)},
+    {l:`Net worth, end of ${label}`,v:money0(net),s:hasPrev?`${signed0(net-Hp.net)} in the month`:`cash ${money0(cash)}${grams>0?` · gold ${money0(goldW)}`:''}`,tone:hasPrev?tone(net-Hp.net):''},
     {l:'Against the phased goal',v:gr==null?'n/a':pS(gr),s:path?`${signed0(gap)} vs the path · target ${money0(path.goal)}`:'no target set for this year',tone:tone(gr)},
-    {l:'Net worth',v:net==null?'Unavailable':money0(net),s:net==null?'No recorded gold price at or before this month':`cash ${money0(cash)}${grams>0?` · gold ${money0(goldW)}`:''}${loan>0.5?` · loans −${money0(loan)}`:''}`,tone:''}]});
-  /* Report v3: reconciliation, contributor detail, gold market versus invested cost. */
-  const gmAll=goldMonthly(rows),gmCur=gmAll.find(x=>x.k===k),gmPrev=gmAll.find(x=>x.k===pk);
-  const priorGoldValue=gmPrev&&gmPrev.value!=null?gmPrev.value:0;
-  const currentGoldValue=gmCur&&gmCur.value!=null?gmCur.value:null;
-  const goldPriceEffect=gmCur&&Number.isFinite(gmCur.priceEffect)?gmCur.priceEffect:null;
-  const goldBought=C0.gold;
-  const contributorSum=C0.p.reduce((a,b)=>a+b,0);
-  const nonContributor=C0.saved-contributorSum;
-  const netChange=hasPrev&&net!=null&&gmPrev&&gmPrev.value!=null?net-(function(){let pc=0,pl=0,pg=0;rows.forEach(d=>{if(d.sortTs>=Rp.b)return;if(isLoanRow(d))pl-=d.usd||0;else{pc+=d.usd||0;pg+=(d.gold||0)*(d.goldPrice||0);}});return pc+(gmPrev&&gmPrev.value!=null?gmPrev.value:pg)-pl;})():null;
-  const bridgeResidual=netChange==null||goldPriceEffect==null?null:netChange-C0.saved-goldPriceEffect;
-  const signedMoney=n=>n==null?'—':signed0(n);
-  const contributorRows=PP.map((name,i)=>[name,money0(C0.p[i]),money0(Y0.p[i]),contributorSum>0?pS(C0.p[i]/contributorSum):'—']);
-  if(Math.abs(nonContributor)>.005)contributorRows.push(['Loans / adjustments / unattributed',signedMoney(nonContributor),signedMoney(Y0.saved-Y0.p.reduce((a,b)=>a+b,0)),'—']);
-  contributorRows.push(['Total saved',money0(C0.saved),money0(Y0.saved),'100% of monthly total']);
-  D.sections.push({type:'table',title:'Contribution breakdown · month and year to date',cols:[['Contributor',0],['Month',1],['YTD',1],['Share of deposits',1]],rows:contributorRows,boldLast:true,
-    note:'Individual contributions reflect named deposits. The reconciliation row explains any difference between deposits and total savings (including loan entries or adjustments).'});
-  if(hasPrev){
-    D.sections.push({type:'table',title:'Why net worth changed · monthly bridge',cols:[['Driver',0],['Amount',1]],rows:[
-      ['Opening net worth',netChange==null?'Unavailable':money0(net-netChange)],['Net savings recorded',signedMoney(C0.saved)],
-      ['Gold market price effect',goldPriceEffect==null?'Not available':signedMoney(goldPriceEffect)],
-      ['Other changes / reconciliation',bridgeResidual==null?'Not available':signedMoney(bridgeResidual)],
-      ['Closing net worth',net==null?'Unavailable':money0(net)]],boldLast:true,
-      note:goldPriceEffect==null?'Gold price impact cannot be isolated without market prices for both months. Other / reconciliation is NOT a verified income or gain.':'Other / reconciliation is an unexplained accounting difference, not a verified gain. Check cash-to-gold transfers and loan entries.'});
-  }
-  if(gmAll.length){
-    const observed=gmAll.filter(x=>x.k<=k),missing=observed.filter(x=>!x.px).length,estimated=observed.filter(x=>x.src==='carried-forward'||x.src==='cached').length;
-    D.sections.push({type:'insights',title:'Gold price data quality',items:[missing?`${missing} month(s) have no usable gold price. Valuations before the first observation remain unavailable.`:'Every displayed month has a valuation quote (some may be carried forward).' , `${estimated} month(s) use cached or carried-forward observations; these are not verified historical month-end closing prices.`, 'Your gold purchase cost is tracked separately from market value. Cash-to-gold transfers and loan movements still require reconciliation.']});
-    const hist=gmAll.filter(x=>x.k<=k).slice(-18),cGold='#B68B3E',cCost='#346F9E',cMarket='#267C6A';
-    D.sections.push({type:'chart',title:'Gold price history · USD per 24k gram (monthly average / carried-forward)',cfg:{type:'line',data:{labels:hist.map(x=>lbl(x.k)),datasets:[{label:'Market price / g (24k)',data:hist.map(x=>x.px||null),borderColor:cGold,backgroundColor:'rgba(182,139,62,.10)',tension:.25,pointRadius:2,spanGaps:false}]},options:opt()}});
-    D.sections.push({type:'chart',title:'Your gold · cumulative cost vs market value',cfg:{type:'line',data:{labels:hist.map(x=>lbl(x.k)),datasets:[
-      {label:'Cumulative amount invested',data:hist.map(x=>x.cost),borderColor:cCost,tension:.2,pointRadius:2},
-      {label:'Market value of holdings',data:hist.map(x=>x.value),borderColor:cMarket,tension:.2,pointRadius:2,spanGaps:false}]},options:opt()}});
-    D.sections.push({type:'table',title:'Gold investment · monthly and cumulative',cols:[['Metric',0],['This month',1],['Total to date',1]],rows:[
-      ['Gold bought · paid',money0(goldBought),money0(goldCost)],
-      ['Gold bought · grams',`${rows.filter(x=>x.yyyyMM===k&&!isLoanRow(x)).reduce((a,x)=>a+(x.gold||0),0).toFixed(2)} g`,`${grams.toFixed(2)} g`],
-      ['Gold market value',currentGoldValue==null||gmPrev?.value==null?'—':signedMoney(currentGoldValue-priorGoldValue),goldW==null?'Unavailable':money0(goldW)],
-      ['Gold price-only effect',goldPriceEffect==null?'—':signedMoney(goldPriceEffect),'—'],
-      ['Unrealized gain / loss', '—',goldW==null?'Unavailable':signedMoney(goldW-goldCost)]],
-      note:'Prices are monthly averages when available; carried-forward quotes are estimates, not historical closing prices. Purchase costs are never market prices. Cash-to-gold transfers and loan entries may require reconciliation.'});
-    const buys=rows.filter(d=>d.sortTs<R.b&&!isLoanRow(d)&&(d.gold||0)>0).sort((a,b)=>b.sortTs-a.sortTs);
-    if(buys.length)D.sections.push({type:'table',title:'Gold purchase ledger · recorded lots',cols:[['Date',0],['Contributor',0],['Gold',1],['Paid',1]],rows:buys.map(d=>[(d.date||'').split(' ')[0],cap(ownerKey(d.name))||'—',`${Number(d.gold||0).toFixed(2)} g`,money0((d.gold||0)*(d.goldPrice||0))]),note:'Purchase prices reflect amounts recorded in the ledger. For detailed purity and individual lot valuation, use Gold over time on the dashboard.'});
-  }
+    grams>0?{l:`Gold, ${grams.toFixed(1)} g`,v:money0(goldW),s:gm?`${signed0(gainG)} on what you paid${est?' · estimated price':''}`:'valued at what you paid',tone:gm?tone(gainG):''}
+           :{l:'Cash',v:money0(cash),s:loan>0.5?`loans −${money0(loan)}`:'no gold, no loans',tone:''},
+    {l:'Against last year',v:hasLy?pS(yoy):'n/a',s:hasLy?`${fk(lk)}: ${money0(L0.saved)}`:`no ${fk(lk)} in the ledger`,tone:tone(yoy)}]});
   /* what stands out */
   const ins=[];
-  const prev6=[];for(let i=1;i<=6;i++){const kk=addMonths(k,-i);if(t.comp[kk])prev6.push(t.comp[kk].delta*(isFM(kk)?JF:1));}
+  const prev6=[];for(let i=1;i<=6;i++){const m2=addMonths(k,-i);if(t.comp[m2])prev6.push(t.comp[m2].delta*(isFM(m2)?JF:1));}
   if(prev6.length>=2){const a=prev6.reduce((s,x)=>s+x,0)/prev6.length;if(a>0)ins.push(`You saved ${money0(C0.saved)} in ${label}, ${pS(C0.saved/a-1)} against your ${prev6.length}-month average of ${money0(a)}.`);}
   const tp=PP.map((p,i)=>[p,C0.p[i]]).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]),tps=tp.reduce((s,x)=>s+x[1],0);
   if(tp.length>1)ins.push(tp.map(([p,x])=>`${p} put in ${money0(x)} (${Math.round(x/tps*100)}%)`).join(', ')+'.');
-  if(Math.abs(nonContributor)>0.5)ins.push(`Named contributions total ${money0(contributorSum)} but net savings are ${money0(C0.saved)}. Difference: ${signedMoney(nonContributor)} from loan entries, withdrawals or other adjustments. Review the contribution breakdown.`);
   else if(tp.length===1)ins.push(`${tp[0][0]} put in all ${money0(tp[0][1])} of the month's deposits.`);
+  if(Math.abs(loanMove)>0.5)ins.push(`Loans ${loanMove<0?'took':'gave back'} ${money0(Math.abs(loanMove))} this month, so the month's saving is ${money0(C0.saved)} after ${money0(tps)} of deposits.`);
   if(hasYL&&ytdYoy!=null)ins.push(`Year to date you saved ${money0(Y0.saved)}, ${pS(ytdYoy)} against ${money0(YL.saved)} by ${MON[R.m-1]} ${R.y-1}.`);
   if(path&&gap!=null){
     const left=Math.max(0,12-R.m),need=left>0?(path.goal-cb)/left:0;
     ins.push(gap>=0?`You are ${money0(gap)} ahead of the path to ${money0(path.goal)} by December ${R.y}.`
       :`You are ${money0(-gap)} behind the path to ${money0(path.goal)}.${left>0?` Landing on target needs ${money0(need)} a month for the ${left} month${left>1?'s':''} left.`:''}`);
   }
-  if(gm&&gm.priceEffect!=null&&gm.k===k&&Math.abs(gm.priceEffect)>0.5)ins.push(`The gold price ${gm.priceEffect>=0?'added':'took off'} ${money0(Math.abs(gm.priceEffect))} ${gm.priceEffect>=0?'to':'from'} the gold you hold${gm.mom!=null?` (gold ${pS(gm.mom)} on the month)`:''}.`);
+  if(gm&&hasPrev&&Hp.grams>0&&Math.abs(priceEff)>0.5)ins.push(`The gold price ${priceEff>=0?'added':'took off'} ${money0(Math.abs(priceEff))} ${priceEff>=0?'to':'from'} your gold${gm.mom!=null?` (gold ${pS(gm.mom)} on the month)`:''}${est?', on an estimated price':''}.`);
   const ents=rows.filter(d=>d.sortTs>=R.a&&d.sortTs<R.b&&Math.abs(rowAmt(d))>0.005).sort((a,b)=>a.sortTs-b.sortTs);
   if(ents.length){const big=ents.reduce((a,d)=>Math.abs(rowAmt(d))>Math.abs(rowAmt(a))?d:a,ents[0]);ins.push(`${ents.length} entr${ents.length>1?'ies':'y'} this month. The largest was ${money0(Math.abs(rowAmt(big)))} from ${cap(ownerKey(big.name))||'an unnamed entry'} on ${(big.date||'').split(' ')[0]}.`);}
   else ins.push('No entries were recorded this month.');
   D.sections.push({type:'insights',title:'What stands out',items:ins});
+  /* bridge: opening + what you did + what the gold price did = closing, to the dollar */
+  if(hasPrev){
+    const br=[[`Net worth, end of ${fk(pk)}`,money0(Hp.net)],['Cash put in, less withdrawals',tc(signed0(dep),tone(dep))]];
+    if(Math.abs(goldIn)>0.5)br.push([`Gold bought, ${goldInG.toFixed(2)} g at what you paid`,tc(signed0(goldIn),'pos')]);
+    if(Math.abs(loanMove)>0.5)br.push(['Loans: taken (−), repaid (+)',tc(signed0(loanMove),tone(loanMove))]);
+    if(grams>0&&gm)br.push([`Gold price change${est?' (estimate)':''}`,tc(signed0(priceEff),tone(priceEff))]);
+    br.push([`Net worth, end of ${label}`,money0(net)]);
+    D.sections.push({type:'table',title:`How your net worth moved in ${label}`,cols:[['',0],['',1]],rows:br,boldLast:true,
+      note:`The first lines add up to what you saved in the month (${money0(dep+goldIn+loanMove)}).${grams>0&&gm?' Gold price change is the rise or fall in the value of your gold beyond what you paid for it.':''}`});
+  }
   /* charts */
   if(path){
     const ax=[];for(let i=0;i<=path.span;i++)ax.push(addMonths(path.firstKey,i));
     const fy=+t.keys[0].slice(0,4);
-    D.sections.push({type:'chart',title:`Balance against the phased goal, ${R.y}`,cfg:{type:'line',data:{labels:ax.map((kk,i)=>i===0&&R.y>fy?`Dec ’${String(R.y-1).slice(2)}`:lbl(kk)),datasets:[
-      {label:'Balance',data:ax.map(kk=>kk<=k?cumAt(t,kk):null),borderColor:C.cash,backgroundColor:'rgba(47,93,138,0.10)',fill:true,tension:.3,borderWidth:2.4,pointRadius:2},
-      {label:'Phased goal',data:ax.map(kk=>path.at(kk)),borderColor:C.gold,borderDash:[6,5],borderWidth:1.8,pointRadius:0}]},options:opt()}});
+    D.sections.push({type:'chart',title:`Net worth against the phased goal, ${R.y}`,cfg:{type:'line',data:{labels:ax.map((m2,i)=>i===0&&R.y>fy?`Dec ’${String(R.y-1).slice(2)}`:lbl(m2)),datasets:[
+      {label:'Net worth',data:ax.map(m2=>m2<=k?cumAt(t,m2):null),borderColor:C.cash,backgroundColor:'rgba(47,93,138,0.10)',fill:true,tension:.3,borderWidth:2.4,pointRadius:2},
+      {label:'Phased goal',data:ax.map(m2=>path.at(m2)),borderColor:C.gold,borderDash:[6,5],borderWidth:1.8,pointRadius:0}]},options:opt()}});
   }
-  const ym=[];for(let m=1;m<=R.m;m++){const kk=`${R.y}-${p2(m)}`;if(kk>=firstMonth())ym.push(kk);}
-  const MB=ym.map(kk=>{const r=mRange(kk);return {k:kk,...bucket(rows,r.a,r.b)};});
+  const ym=[];for(let m=1;m<=R.m;m++){const m2=`${R.y}-${p2(m)}`;if(m2>=firstMonth())ym.push(m2);}
+  const MB=ym.map(m2=>{const r=mRange(m2);return {k:m2,...bucket(rows,r.a,r.b)};});
   const actP=PP.map((_,i)=>i).filter(i=>MB.some(o=>Math.abs(o.p[i])>0.5));
+  const other=o=>o.saved-o.p.reduce((a,b)=>a+b,0);
   D.sections.push({type:'chart',title:`Saved per month, ${R.y}`,cfg:{type:'bar',data:{labels:MB.map(o=>lbl(o.k)),datasets:[
     ...actP.map(i=>({label:PP[i],data:MB.map(o=>o.p[i]),backgroundColor:pcol(i),stack:'s'})),
-    ...(MB.some(o=>Math.abs(o.saved-o.p.reduce((a,b)=>a+b,0))>0.5)?[{label:'Loans and other',data:MB.map(o=>o.saved-o.p.reduce((a,b)=>a+b,0)),backgroundColor:C.debt,stack:'s'}]:[])]},options:opt({stacked:true})}});
+    ...(MB.some(o=>Math.abs(other(o))>0.5)?[{label:'Loans and other',data:MB.map(other),backgroundColor:C.debt,stack:'s'}]:[])]},options:opt({stacked:true})}});
+  /* who saved what */
+  const cs=C0.p.reduce((a,b)=>a+b,0),ys=Y0.p.reduce((a,b)=>a+b,0);
+  const who=PP.map((name,i)=>[name,money0(C0.p[i]),cs>0?`${Math.round(C0.p[i]/cs*100)}%`:'—',money0(Y0.p[i]),ys>0?`${Math.round(Y0.p[i]/ys*100)}%`:'—']).filter((r,i)=>Math.abs(C0.p[i])+Math.abs(Y0.p[i])>0.5);
+  if(Math.abs(C0.saved-cs)>0.5||Math.abs(Y0.saved-ys)>0.5)who.push(['Loans and other',tc(signed0(C0.saved-cs),tone(C0.saved-cs)),'—',tc(signed0(Y0.saved-ys),tone(Y0.saved-ys)),'—']);
+  who.push(['Saved',money0(C0.saved),'',money0(Y0.saved),'']);
+  D.sections.push({type:'table',title:'Who saved what',cols:[['',0],[label,1],['Share',1],[`${R.y} so far`,1],['Share',1]],rows:who,boldLast:true});
   /* scorecard */
   const M=[['Saved',o=>o.saved],...PP.map((p,i)=>[`${p} added`,o=>o.p[i]]).filter((m,i)=>Math.abs(C0.p[i])+Math.abs(P0.p[i])+Math.abs(L0.p[i])+Math.abs(Y0.p[i])>0.5),['Gold bought',o=>o.gold]];
-  const dc=(a,b,ok)=>{if(!ok)return tc('n/a');const v=pcOf(a,b);return tc(v==null?signed0(a-b):`${pS(v)}  (${signed0(a-b)})`,a-b>=0?'pos':'neg');};
+  const dc=(a,b,ok)=>{if(!ok)return tc('n/a');const v=pcOf(a,b);return tc(v==null?signed0(a-b):`${pS(v)} (${signed0(a-b)})`,a-b>=0?'pos':'neg');};
   D.sections.push({type:'table',title:`${label} against last month and last year`,cols:[['',0],[label,1],[fk(pk),1],['Month on month',1],[fk(lk),1],['Year on year',1]],
     rows:[...M.map(([l,g])=>[l,money0(g(C0)),hasPrev?money0(g(P0)):'—',dc(g(C0),g(P0),hasPrev),hasLy?money0(g(L0)):'—',dc(g(C0),g(L0),hasLy)]),
-      ['Balance at end',money0(bal),hasPrev?money0(balP):'—',dc(bal,balP,hasPrev),hasLy?money0(balL):'—',dc(bal,balL,hasLy)]]});
-  D.sections.push({type:'table',title:`Year to date, 1 January to end of ${label}`,cols:[['',0],[String(R.y),1],[String(R.y-1),1],['Year on year',1]],
-    rows:M.map(([l,g])=>[l,money0(g(Y0)),hasYL?money0(g(YL)):'—',dc(g(Y0),g(YL),hasYL)])});
+      ['Net worth at end',money0(net),hasPrev?money0(Hp.net):'—',dc(net,Hp.net,hasPrev),hasLy?money0(Hl.net):'—',dc(net,Hl.net,hasLy)]]});
+  if(hasYL)D.sections.push({type:'table',title:`Year to date, 1 January to end of ${label}`,cols:[['',0],[String(R.y),1],[String(R.y-1),1],['Year on year',1]],
+    rows:M.map(([l,g])=>[l,money0(g(Y0)),money0(g(YL)),dc(g(Y0),g(YL),true)])});
   /* the year month by month */
-  D.sections.push({type:'table',title:`${R.y} month by month`,cols:[['Month',0],['Saved',1],...actP.map(i=>[PP[i],1]),['Gold bought',1],['Balance',1],['vs goal',1]],
+  D.sections.push({type:'table',title:`${R.y} month by month`,cols:[['Month',0],['Saved',1],...actP.map(i=>[PP[i],1]),['Gold bought',1],['Net worth',1],['vs goal',1]],
     rows:MB.map(o=>{const b=cumAt(t,o.k),g=path?goalRatio(R.y,path,t,o.k,b):null;return [fk(o.k),money0(o.saved),...actP.map(i=>money0(o.p[i])),o.gold?money0(o.gold):'—',money0(b),tc(g==null?'—':pS(g),tone(g))];})});
   /* what you hold */
   const hold=[['Cash',money0(cash),money0(cash),'—']];
-  if(grams>0)hold.push([`Gold, ${grams.toFixed(1)} g`,money0(goldCost),money0(goldW),tc(goldCost?pS(goldW/goldCost-1):'—',goldW>=goldCost?'pos':'neg')]);
+  if(grams>0)hold.push([`Gold, ${grams.toFixed(1)} g`,money0(goldCost),money0(goldW),tc(goldCost&&gm?`${signed0(gainG)} (${pS(goldW/goldCost-1)})`:'—',tone(gainG))]);
   if(loan>0.5)hold.push(['Loans',`−${money0(loan)}`,`−${money0(loan)}`,'—']);
-  hold.push(['Net worth',money0(cash+goldCost-loan),money0(net),tc(Math.abs(goldW-goldCost)>0.5?signed0(goldW-goldCost):'—',goldW>=goldCost?'pos':'neg')]);
-  D.sections.push({type:'table',title:`What you hold at the end of ${label}`,cols:[['',0],['Paid',1],['Worth',1],['Change',1]],rows:hold,boldLast:true});
-  if(gm&&grams>0){
-    const kk=gset().karat;
-    D.sections.push({type:'table',title:'Gold and the market',cols:[['',0],['',1]],rows:[
-      [`Price per gram, ${kk}k`,money2(gm.px*kk/24)],[`Price per gram, 24k`,money2(gm.px)],
-      ['Change on the month before',tc(gm.mom==null?'n/a':pS(gm.mom),tone(gm.mom))],['Change on a year before',tc(gm.yoy==null?'n/a':pS(gm.yoy),tone(gm.yoy))],
-      ['What the price did to your gold this month',tc(gm.priceEffect==null||gm.k!==k?'—':signed0(gm.priceEffect),tone(gm.priceEffect))]],
-      note:gm.src==='market'||gm.src==='live'||gm.src==='manual'?'':'The gold price for this month is an estimate, because no market price was available.'});
+  hold.push(['Net worth',money0(cash+goldCost-loan),money0(net),tc(Math.abs(gainG)>0.5?signed0(gainG):'—',tone(gainG))]);
+  D.sections.push({type:'table',title:`What you hold at the end of ${label}`,cols:[['',0],['Paid',1],[grams>0?'Worth':'Value',1],['Gain',1]],rows:hold,boldLast:true});
+  /* gold */
+  if(grams>0&&gm){
+    const gr2=[['Holding',`${grams.toFixed(2)} g`],['Paid in total',money0(goldCost)],[`Worth at the end of ${label}`,money0(goldW)],
+      ['Gain on what you paid',tc(goldCost?`${signed0(gainG)} (${pS(goldW/goldCost-1)})`:signed0(gainG),tone(gainG))],
+      [`Price per gram, ${kk}k${est?' (estimate)':''}`,money2(gm.px*kk/24)]];
+    if(gm.mom!=null)gr2.push(['Price against the month before',tc(pS(gm.mom),tone(gm.mom))]);
+    if(gm.yoy!=null)gr2.push(['Price against a year before',tc(pS(gm.yoy),tone(gm.yoy))]);
+    if(hasPrev&&Hp.grams>0)gr2.push(['What the price did to your gold this month',tc(signed0(priceEff),tone(priceEff))]);
+    if(goldInG>0)gr2.push(['Bought this month',`${goldInG.toFixed(2)} g for ${money0(goldIn)}`]);
+    D.sections.push({type:'table',title:'Your gold',cols:[['',0],['',1]],rows:gr2,
+      note:est?`No market price was available for ${label}, so its gold price is an estimate between the nearest known prices. Tap the month in the Gold tab to type the real price.`
+        :(gm.src==='market'?'The price is the market’s average for the month.':(gm.src==='manual'?'The price is the one you typed.':'The price is the latest one received.'))});
+    const hist=gmAll.filter(x=>x.k<=k).slice(-18),anyEst=hist.some(x=>x.est);
+    if(hist.length>1){
+      const pv=hist.map(x=>x.px?Math.round(x.px*kk/24*100)/100:null);
+      const estLine=hist.map((x,i)=>(x.est||(hist[i-1]&&hist[i-1].est)||(hist[i+1]&&hist[i+1].est))?pv[i]:null);
+      D.sections.push({type:'chart',title:`Gold price per gram, ${kk}k`,money2:true,cfg:{type:'line',data:{labels:hist.map(x=>lbl(x.k)),datasets:[
+        {label:'Market price',data:hist.map((x,i)=>x.est?null:pv[i]),borderColor:C.gold,backgroundColor:C.gold,tension:.25,borderWidth:2.4,pointRadius:2.5,spanGaps:false},
+        ...(anyEst?[{label:'Estimate',data:estLine,borderColor:'#C9B58B',backgroundColor:'#C9B58B',borderDash:[5,4],tension:.25,borderWidth:1.8,pointRadius:0,spanGaps:false}]:[])]},options:opt()},
+        note:anyEst?'The dashed part is estimated: no market price was available for those months.':''});
+      D.sections.push({type:'chart',title:'Your gold: what you paid and what it is worth',cfg:{type:'line',data:{labels:hist.map(x=>lbl(x.k)),datasets:[
+        {label:'Worth',data:hist.map(x=>Math.round(x.value)),borderColor:C.cash,backgroundColor:C.cash,tension:.25,borderWidth:2.4,pointRadius:2.5},
+        {label:'What you paid',data:hist.map(x=>Math.round(x.cost)),borderColor:'#9AA6B1',backgroundColor:'#9AA6B1',borderDash:[5,4],stepped:true,borderWidth:1.8,pointRadius:0}]},options:opt()}});
+    }
+    const buys=rows.filter(d=>d.sortTs<R.b&&!isLoanRow(d)&&(d.gold||0)>0).sort((a,b)=>b.sortTs-a.sortTs);
+    if(buys.length)D.sections.push({type:'table',title:'Your gold purchases',cols:[['Date',0],['Who',0],['Gold',1],['Paid',1],['Worth',1],['Gain',1]],
+      rows:buys.map(d=>{const p=(d.gold||0)*(d.goldPrice||0),w=(d.gold||0)*rowKarat(d)/24*gm.px;return [(d.date||'').split(' ')[0],cap(ownerKey(d.name))||'—',`${Number(d.gold||0).toFixed(2)} g ${rowKarat(d)}k`,money0(p),money0(w),tc(p?pS(w/p-1):'—',tone(w-p))];})});
   }
   /* entries */
   D.sections.push({type:'table',title:`Entries in ${label}`,cols:[['Date',0],['Who',0],['Type',0],['Amount',1]],
     rows:ents.length?ents.map(d=>[(d.date||'').split(' ')[0],cap(ownerKey(d.name))||'—',isLoanRow(d)?'Loan':(d.gold>0?`Gold ${d.gold} g${kOf(d)?` ${kOf(d)}k`:''}`:'Cash'),tc(signed0(rowAmt(d)),rowAmt(d)>=0?'pos':'neg')]):[['No entries','','','']]});
-  D.foot='Accounting warning: gold purchases are currently recorded as new holdings, not automatic cash-to-gold transfers; loan rows do not create matching cash entries. For a cash-funded gold purchase, record the cash outflow separately to avoid overstating net worth. Missing historical gold prices are not market estimates. '+ 'Saved, each person’s added amount and Gold bought count gold at what you paid. Balances and net worth count gold at the market price of the month.'+(R.y===firstYearAll()&&startSaving()!=null?` ${fmTxt()} counts as ${money0(startSaving())}, your real saving that month, not the savings brought in.`:'');
+  D.foot='Saved, each person’s amount and Gold bought count gold at what you paid. Net worth counts gold at the price of the month: the market’s average when it is known, an estimate when it is not.'+(R.y===firstYearAll()&&startSaving()!=null?` ${fmTxt()} counts as ${money0(startSaving())}, your real saving that month, not the savings brought in.`:'');
   return D;
 }
 
 /* ----- on screen ----- */
-document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-pdf">Export PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
+document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-pdf">Save PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
 const st5=document.createElement('style');
 st5.textContent=`#rp{position:fixed;inset:0;z-index:600;background:var(--bg);overflow-y:auto;-webkit-overflow-scrolling:touch}
 .rp-bar{position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:var(--card);border-bottom:1px solid var(--line)}
@@ -1884,7 +2089,7 @@ function renderReport(){
   D.sections.forEach(s=>{
     if(s.type==='tiles')h+=`<div class="rp-tiles">${s.tiles.map(x=>`<div class="rp-t"><span>${esc(x.l)}</span><b class="${/^[+−]/.test(x.v)?x.tone:''}">${esc(x.v)}</b><em class="${/^[+−]/.test(x.v)?'':x.tone}">${esc(x.s)}</em></div>`).join('')}</div>`;
     else if(s.type==='insights')h+=`<div class="rp-h2">${esc(s.title)}</div><div class="rp-ins">${s.items.map(x=>`<p>${esc(x)}</p>`).join('')}</div>`;
-    else if(s.type==='chart'){h+=`<div class="rp-h2">${esc(s.title)}</div><div class="rp-ch"><div><canvas id="rp-c${cfgs.length}"></canvas></div></div>`;cfgs.push(s.cfg);}
+    else if(s.type==='chart'){h+=`<div class="rp-h2">${esc(s.title)}</div><div class="rp-ch"><div><canvas id="rp-c${cfgs.length}"></canvas></div></div>${s.note?`<p class="rp-note">${esc(s.note)}</p>`:''}`;if(s.money2){s.cfg.options.scales.y.ticks.callback=v=>'$'+Math.round(v);s.cfg.options.plugins.tooltip.callbacks={label:c=>` ${c.dataset.label}: ${c.raw==null?'—':money2(c.raw)}`};}cfgs.push(s.cfg);}
     else if(s.type==='table')h+=`<div class="rp-h2">${esc(s.title)}</div><div class="table-container"><table style="min-width:${Math.max(320,s.cols.length*92)}px"><thead><tr>${s.cols.map(([l,r])=>`<th${r?' class="r"':''}>${esc(l)}</th>`).join('')}</tr></thead><tbody>${s.rows.map((r,i)=>`<tr>${r.map((c,j)=>`<td class="${s.cols[j]&&s.cols[j][1]?'num':''}">${j===0||(s.boldLast&&i===s.rows.length-1)?`<strong>${cellH(c)}</strong>`:cellH(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${s.note?`<p class="rp-note">${esc(s.note)}</p>`:''}`;
   });
   h+=`<p class="rp-note">${esc(D.foot)}</p>`;
@@ -1896,6 +2101,7 @@ function openReport(k){
   if(k)RP.k=k;
   $('rp').hidden=false;document.body.style.overflow='hidden';renderReport();$('rp').scrollTop=0;
   const lc=lastClosedMonth();if(lc&&RP.k>=lc){try{localStorage.setItem('lg-report-seen',lc);}catch(e){}renderRepCard();}
+  try{const s=nget();if(s&&s.inbox&&s.inbox.some(x=>x.id==='report-'+RP.k)){s.inbox=s.inbox.filter(x=>x.id!=='report-'+RP.k);nset(s);renderNotes();}}catch(e){}
 }
 function closeReport(){if(RP.pdfUrl){URL.revokeObjectURL(RP.pdfUrl);RP.pdfUrl=null;}$('rp').hidden=true;document.body.style.overflow='';RP.charts.forEach(c=>{try{c.destroy();}catch(e){}});RP.charts=[];}
 $('rp-close').onclick=closeReport;
@@ -1912,7 +2118,9 @@ function renderRepCard(){
   const isNew=seen<lc&&lc<nowKey();
   el.hidden=false;el.classList.toggle('new',isNew);
   $('x-rep-t').textContent=isNew?`Your ${fk(lc)} report is ready`:`Monthly report, ${fk(lc)}`;
-  $('x-rep-s').textContent='Contributors, wealth bridge, gold market charts and all entries. Export to PDF.';
+  let sub='Scorecard, how your net worth moved, gold and every entry. Save it as a PDF.';
+  if(isNew){try{sub=reportNote(lc).body.replace(' Tap to open it.','');}catch(e){}}
+  $('x-rep-s').textContent=sub;
 }
 
 /* ----- PDF: written directly, no outside library ----- */
@@ -1932,6 +2140,7 @@ function PdfDoc(){
       ops.push(`BT /F${o.bold?2:1} ${size} Tf ${rgb(o.color||'#16232F')} rg ${n2(tx)} ${n2(H-y)} Td (${enc(s)}) Tj ET`);},
     rect(x,y,w,h,fill,stroke){ops.push(`${fill?rgb(fill)+' rg ':''}${stroke?rgb(stroke)+' RG 0.6 w ':''}${n2(x)} ${n2(H-y-h)} ${n2(w)} ${n2(h)} re ${fill&&stroke?'B':(fill?'f':'S')}`);},
     line(x1,y1,x2,y2,color,w){ops.push(`${rgb(color||'#E1E5EA')} RG ${w||0.6} w ${n2(x1)} ${n2(H-y1)} m ${n2(x2)} ${n2(H-y2)} l S`);},
+    path(pts,color,w,dash){if(pts.length<2)return;ops.push(`${rgb(color||'#16232F')} RG ${w||1} w 1 j 1 J ${dash?`[${dash.join(' ')}] 0 d `:''}${pts.map((p,i)=>`${n2(p[0])} ${n2(H-p[1])} ${i?'l':'m'}`).join(' ')} S${dash?' [] 0 d':''}`);},
     wrap(s,size,maxW,bold){const out=[];let line='';clean(s).split(/\s+/).forEach(w=>{const t=line?line+' '+w:w;if(api.width(t,size,bold)<=maxW||!line)line=t;else{out.push(line);line=w;}});if(line)out.push(line);return out;},
     image(dataUrl,x,y,w,h,pw,ph){const b=atob(dataUrl.split(',')[1]),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);
       imgs.push({u,pw,ph});ops.push(`q ${n2(w)} 0 0 ${n2(h)} ${n2(x)} ${n2(H-y-h)} cm /Im${imgs.length} Do Q`);},
@@ -1959,19 +2168,46 @@ function PdfDoc(){
     }};
   return api;
 }
-function chartJpeg(cfg,w,h){
-  const box=document.createElement('div');box.style.cssText=`position:fixed;left:-9999px;top:0;width:${w}px;height:${h}px`;
-  const cv=document.createElement('canvas');cv.width=w*2;cv.height=h*2;cv.style.width=w+'px';cv.style.height=h+'px';box.appendChild(cv);document.body.appendChild(box);
-  let url='';
-  try{
-    const c=JSON.parse(JSON.stringify({type:cfg.type,data:cfg.data}));const o=opt(cfg.options&&cfg.options.scales&&cfg.options.scales.x&&cfg.options.scales.x.stacked?{stacked:true}:null);
-    o.responsive=false;o.animation=false;o.devicePixelRatio=2;c.options=o;
-    const ch=new Chart(cv,c);
-    const out=document.createElement('canvas');out.width=cv.width;out.height=cv.height;const g=out.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,out.width,out.height);g.drawImage(cv,0,0);
-    url=out.toDataURL('image/jpeg',0.9);try{ch.destroy();}catch(e){}
-    return {url,pw:out.width,ph:out.height};
-  }catch(e){console.error(e);return null;}
-  finally{box.remove();}
+/* charts are drawn straight into the PDF as lines and bars: sharp at any zoom, and no hidden canvas to go wrong on a phone */
+const hexOf=c=>{c=String(c||'#16232F');if(c[0]==='#')return c.length===4?'#'+[1,2,3].map(i=>c[i]+c[i]).join(''):c.slice(0,7);
+  const m=/rgba?\(([^)]+)\)/.exec(c);if(!m)return '#16232F';const p=m[1].split(',').map(Number),a=p.length>3?p[3]:1;
+  return '#'+[0,1,2].map(i=>Math.round(p[i]*a+255*(1-a)).toString(16).padStart(2,'0')).join('');};
+function niceStep(span,n){const raw=span/Math.max(1,n),mag=Math.pow(10,Math.floor(Math.log10(raw||1))),r=raw/mag;return (r<=1?1:r<=2?2:r<=2.5?2.5:r<=5?5:10)*mag;}
+function pdfChart(P,s,x,y,w,h){
+  const cfg=s.cfg,ds=cfg.data.datasets||[],labels=cfg.data.labels||[],n=labels.length,MUT='#69737F',LINE='#E9EDF1';
+  const stacked=!!(cfg.options&&cfg.options.scales&&cfg.options.scales.x&&cfg.options.scales.x.stacked);
+  const isBar=d=>(d.type||cfg.type)==='bar';
+  let lo=Infinity,hi=-Infinity;
+  ds.filter(d=>!isBar(d)).forEach(d=>d.data.forEach(v=>{if(v!=null&&isFinite(v)){lo=Math.min(lo,v);hi=Math.max(hi,v);}}));
+  const bars=ds.filter(isBar);
+  if(bars.length){for(let i=0;i<n;i++){let p=0,q=0;bars.forEach(d=>{const v=+d.data[i]||0;if(stacked){if(v>=0)p+=v;else q+=v;}else{p=Math.max(p,v);q=Math.min(q,v);}});hi=Math.max(hi,p);lo=Math.min(lo,q,0);}}
+  if(!isFinite(lo)||!isFinite(hi)){P.text(x+10,y+24,'Nothing to chart yet.',{size:9,color:MUT});return;}
+  if(hi===lo){hi+=1;lo-=1;}
+  const pad=(hi-lo)*0.08;if(!bars.length)lo=lo-pad<0&&lo>=0?0:lo-pad;hi+=pad;
+  const step=niceStep(hi-lo,4);lo=Math.floor(lo/step)*step;hi=Math.ceil(hi/step)*step;
+  const fmtY=v=>{const a=Math.abs(v),sg=v<0?'−':'';return s.money2?sg+'$'+(step<1?a.toFixed(2):Math.round(a)):(hi-lo>=20000?sg+'$'+(a/1000).toFixed(step%1000?1:0)+'k':sg+'$'+Math.round(a).toLocaleString('en-US'));};
+  const px0=x+46,px1=x+w-10,py0=y+10,py1=y+h-34,pw=px1-px0,ph=py1-py0;
+  const Y=v=>py1-(v-lo)/(hi-lo)*ph,slot=pw/Math.max(1,n),X=i=>bars.length?px0+slot*(i+0.5):(n>1?px0+pw*i/(n-1):px0+pw/2);
+  for(let v=lo;v<=hi+step/2;v+=step){P.line(px0,Y(v),px1,Y(v),Math.abs(v)<step/1e6?'#C9D0D8':LINE,0.5);P.text(px0-5,Y(v)+2.6,fmtY(v),{size:7,color:MUT,align:'right'});}
+  const every=Math.max(1,Math.ceil(n/9));
+  labels.forEach((l,i)=>{if(i%every===0||i===n-1&&(n-1)%every>every/2)P.text(X(i),py1+11,String(l),{size:7,color:MUT,align:'center'});});
+  if(bars.length){
+    const bw=Math.min(26,slot*0.62);
+    for(let i=0;i<n;i++){let up=0,dn=0;bars.forEach((d,j)=>{const v=+d.data[i]||0;if(!v)return;const c=hexOf(Array.isArray(d.backgroundColor)?d.backgroundColor[i]:d.backgroundColor);
+      if(stacked){const a=v>=0?up:dn,b=a+v;P.rect(X(i)-bw/2,Math.min(Y(a),Y(b)),bw,Math.abs(Y(a)-Y(b)),c);if(v>=0)up=b;else dn=b;}
+      else{const w1=bw/bars.length;P.rect(X(i)-bw/2+j*w1,Math.min(Y(0),Y(v)),w1,Math.abs(Y(0)-Y(v)),c);}});}
+  }
+  ds.filter(d=>!isBar(d)).forEach(d=>{
+    const c=hexOf(d.borderColor),lw=d.borderDash?1.2:1.7;let seg=[];
+    const flush=()=>{if(seg.length>1)P.path(seg,c,lw,d.borderDash?[4,3]:null);seg=[];};
+    d.data.forEach((v,i)=>{if(v==null||!isFinite(v)){flush();return;}
+      if(d.stepped&&seg.length)seg.push([X(i),seg[seg.length-1][1]]);seg.push([X(i),Y(v)]);});
+    flush();
+    if(d.pointRadius!==0&&n<=24)d.data.forEach((v,i)=>{if(v!=null&&isFinite(v))P.rect(X(i)-1.6,Y(v)-1.6,3.2,3.2,c);});
+  });
+  let lx=px0;ds.forEach(d=>{const c=hexOf(isBar(d)?(Array.isArray(d.backgroundColor)?d.backgroundColor[0]:d.backgroundColor):d.borderColor),t=String(d.label||'');
+    if(isBar(d))P.rect(lx,y+h-13,7,7,c);else P.path([[lx,y+h-9.5],[lx+10,y+h-9.5]],c,1.7,d.borderDash?[3,2]:null);
+    const off=isBar(d)?10:14;P.text(lx+off,y+h-7,t,{size:7.5,color:'#2B3B4A'});lx+=off+P.width(t,7.5)+14;});
 }
 function buildPdf(D){
   const P=PdfDoc(),L=42,Rt=P.W-42,CW=Rt-L,INK='#16232F',MUT='#69737F',LINE='#E1E5EA',POS='#2E7D5B',NEG='#B0433A';
@@ -1997,12 +2233,13 @@ function buildPdf(D){
       s.items.forEach(it=>{const lines=P.wrap(it,9.5,CW-14);need(lines.length*12.5+5);P.rect(L,y-6.5,3,3,'#B9892F');lines.forEach((ln,j)=>P.text(L+12,y+j*12.5,ln,{size:9.5,color:'#2B3B4A'}));y+=lines.length*12.5+5;});
       y+=8;
     }else if(s.type==='chart'){
-      const h=172;need(h+34);P.text(L,y+10,s.title,{size:12.5,bold:true});y+=20;
-      const im=chartJpeg(s.cfg,Math.round(CW),h);
-      if(im)P.image(im.url,L,y,CW,h,im.pw,im.ph);else P.text(L,y+20,'Chart not available.',{size:9,color:MUT});
-      P.rect(L,y,CW,h,null,LINE);y+=h+16;
+      const h=178;need(h+34+(s.note?12:0));P.text(L,y+10,s.title,{size:12.5,bold:true});y+=20;
+      P.rect(L,y,CW,h,null,LINE);
+      try{pdfChart(P,s,L,y,CW,h);}catch(e){console.error(e);P.text(L+10,y+24,'Chart not available.',{size:9,color:MUT});}
+      y+=h+(s.note?4:16);
+      if(s.note){P.wrap(s.note,8,CW).forEach(ln=>{need(11);P.text(L,y+8,ln,{size:8,color:MUT});y+=10.5;});y+=12;}
     }else if(s.type==='table'){
-      const n=s.cols.length,fs=n>7?7.6:(n>5?8.4:9.2),rh=fs+8.5,first=n<=2?CW*0.62:Math.max(96,Math.min(170,CW-(n-1)*78)),cw=(CW-first)/Math.max(1,n-1);
+      const n=s.cols.length,fs=n>7?7.4:(n>5?7.8:9.2),rh=fs+8.5,first=n<=2?CW*0.62:(n>5?Math.max(70,CW-(n-1)*86):Math.max(96,Math.min(170,CW-(n-1)*78))),cw=(CW-first)/Math.max(1,n-1);
       const xs=s.cols.map((_,i)=>i===0?L:L+first+(i-1)*cw);
       const hasHead=s.cols.some(c=>c[0]);
       const head=()=>{if(!hasHead){P.line(L,y,Rt,y,LINE,0.4);return;}P.rect(L,y,CW,rh+2,'#F6F8FA');s.cols.forEach(([l,r],i)=>{if(l)P.text(r?xs[i]+cw-5:xs[i]+5,y+rh-4,String(l).toUpperCase(),{size:fs-1.6,bold:true,color:MUT,align:r?'right':'left'});});y+=rh+2;};
@@ -2020,54 +2257,8 @@ function buildPdf(D){
   need(34);P.wrap(D.foot,8,CW).forEach(ln=>{P.text(L,y+8,ln,{size:8,color:MUT});y+=10.5;});
   return P.bytes();
 }
-/* Compact A4 executive report; the existing detailed report remains available on screen. */
-function buildOnePagePdf(D){
-  const P=PdfDoc(),L=38,R=P.W-38,W=R-L,N='#162A3A',M='#687786',B='#E5EAF0',GREEN='#187A62',RED='#B6534E',GOLD='#B68B3E';
-  P.page();const row=allData,range=mRange(D.k),prev=mRange(addMonths(D.k,-1)),year=new Date(range.y,0,1).getTime();
-  const cur=bucket(row,range.a,range.b),ytd=bucket(row,year,range.b),previous=bucket(row,prev.a,prev.b);
-  const t=computeAnalytics(row),path=pathFor(range.y,t),actual=cumAt(t,D.k),target=path?path.at(D.k):null;
-  const value=(end)=>{let cash=0,cost=0,g=0,loans=0;row.forEach(d=>{if(!(d.sortTs<end))return;if(isLoanRow(d))loans-=d.usd||0;else{cash+=d.usd||0;cost+=(d.gold||0)*(d.goldPrice||0);g+=d.gold||0;}});let price=null;try{const month=end===range.b?D.k:addMonths(D.k,-1);const observed=goldMonthly(row).find(x=>x.k===month);if(observed&&observed.px)price=observed.px;}catch(e){};const units=row.filter(d=>d.sortTs<end&&!isLoanRow(d)).reduce((a,d)=>a+(d.gold||0)*rowKarat(d)/24,0);return {cash,cost,grams:g,loans,gold:g>0?(price!=null?units*price:null):0,price};};
-  const now=value(range.b),before=value(prev.b),nw=now.gold==null?null:now.cash+now.gold-now.loans,pw=before.gold==null?null:before.cash+before.gold-before.loans,change=nw==null||pw==null?null:nw-pw;
-  const goldFlow=now.gold==null||before.gold==null?null:now.gold-before.gold,acquired=now.cost-before.cost;
-  // New gold purchases transfer value from cash to gold, not new net worth.
-  const market=goldFlow==null?null:goldFlow-acquired,contribution=cur.saved,other=change==null||market==null?null:change-contribution-market;
-  const fmt=n=>n==null?'Unavailable':money0(n),sign=n=>n==null?'Unavailable':(n>=0?'+':'−')+fmt(Math.abs(n)),pct=n=>n==null?'—':pS(n);
-  const txt=(x,y,v,size=10,color=N,bold=false,align='left')=>P.text(x,y,v,{size,color,bold,align});
-  const line=(y)=>P.line(L,y,R,y,B,.8);
-  const title=(y,v)=>txt(L,y,v.toUpperCase(),9,M,true);
-  txt(L,43,'SAVINGS LEDGER  /  MONTHLY WEALTH REVIEW',9,M,true);
-  txt(L,77,D.label,27,N,true);txt(R,75,D.partial?'MONTH TO DATE':'MONTH CLOSED',8,M,true,'right');
-  line(91);
-  const cards=[['NET WORTH',fmt(nw),sign(change)+' vs prior month'],['MONTHLY SAVED',fmt(cur.saved),'YTD '+fmt(ytd.saved)],['VS PHASED PLAN',target==null?'Not set':sign(actual-target),target==null?'Set target in Data':(actual>=target?'Ahead of plan':'Behind plan')]];
-  cards.forEach((c,i)=>{const x=L+i*(W/3+1),w=W/3-8;P.rect(x,105,w,78,'#F3F6F8');txt(x+10,123,c[0],8,M,true);txt(x+10,148,c[1],17,i===2&&target!=null?(actual>=target?GREEN:RED):N,true);txt(x+10,169,c[2],8,M);});
-  title(212,'Monthly wealth bridge');txt(R,212,'Change in net worth '+sign(change),9,N,true,'right');
-  const bridge=[['Opening wealth',pw],['Net contributions',contribution],['Gold market effect',market],['Other / reconciliation',other],['Closing wealth',nw]];
-  bridge.forEach(([label,n],i)=>{const yy=235+i*27;txt(L+5,yy,label,10,i===0||i===4?N:M,i===0||i===4);txt(R-5,yy,i===0||i===4?fmt(n):sign(n),10,i===2?(n>=0?GREEN:RED):N,true,'right');if(i!==4)P.line(L,yy+9,R,yy+9,B,.45);});
-  title(391,'Savings trajectory · actual vs plan');
-  const months=[];for(let i=1;i<=range.m;i++){const k=range.y+'-'+String(i).padStart(2,'0');if(k>=firstMonth())months.push(k);}
-  const data=months.map(k=>({k,a:cumAt(t,k),p:path?path.at(k):null}));
-  const vals=data.flatMap(d=>[d.a,d.p]).filter(Number.isFinite),min=Math.min(...vals,0),max=Math.max(...vals,1),span=max-min||1;
-  const X=L+16,Y=416,CW=W-32,CH=91;
-  for(let i=0;i<4;i++)P.line(X,Y+i*CH/3,X+CW,Y+i*CH/3,B,.5);
-  const plot=(key,color)=>{for(let i=1;i<data.length;i++){const a=data[i-1][key],b=data[i][key];if(a==null||b==null)continue;const x1=X+(i-1)*CW/Math.max(1,data.length-1),x2=X+i*CW/Math.max(1,data.length-1);P.line(x1,Y+CH-(a-min)/span*CH,x2,Y+CH-(b-min)/span*CH,color,2);}};
-  plot('a','#306B9B');if(path)plot('p',GOLD);
-  txt(X,Y+CH+14,months.length?lbl(months[0]):'',8,M);txt(X+CW,Y+CH+14,months.length?lbl(months[months.length-1]):'',8,M,false,'right');
-  txt(L,542,'— Actual',9,'#306B9B',true);if(path)txt(L+88,542,'— Phased goal',9,GOLD,true);
-  line(553);title(575,'Gold · position and performance');
-  const gmetrics=[['HOLDINGS',now.grams.toFixed(2)+' g'],['INVESTED COST',fmt(now.cost)],['MARKET VALUE',fmt(now.gold)],['UNREALIZED P/L',now.gold==null?'Unavailable':sign(now.gold-now.cost)]];
-  gmetrics.forEach((m,i)=>{const x=L+(i%2)*W/2,yy=599+Math.floor(i/2)*38;txt(x,yy,m[0],8,M,true);txt(x,yy+18,m[1],13,N,true);});
-  txt(L,680,'Gold price impact this month: '+sign(market)+'  |  Gold acquired: '+Math.max(0,now.grams-before.grams).toFixed(2)+' g',9,market<0?RED:GREEN);
-  line(699);title(722,'Performance at a glance');
-  txt(L,743,'',9);txt(L,743,'NET CONTRIBUTIONS',8,M,true);txt(L+218,743,'MONTH',8,M,true);txt(R,743,'YTD',8,M,true,'right');
-  txt(L,762,'Savings added',10,N);txt(L+218,762,fmt(cur.saved),10,N,true);txt(R,762,fmt(ytd.saved),10,N,true,'right');
-  const remaining=Math.max(0,12-range.m),need=path&&remaining?(path.goal-actual)/remaining:null;
-  const insight=target==null?'Set a savings goal in Data to unlock plan tracking.':(actual>=target?'Savings are ahead of the phased plan.':'Savings are below the phased plan.')+(need!=null?' Remaining monthly pace: '+fmt(Math.max(0,need))+'.':'');
-  txt(L,790,insight,8,M);txt(L,813,'Gold values use available market observations; internal transfers must not be counted as new savings.',7,M);
-  txt(R,813,'Generated '+new Date().toISOString().slice(0,10),7,M,false,'right');
-  return P.bytes();
-}
-window.lgBuildDetailedPdf=k=>buildPdf(reportData(k));
-window.lgBuildPdf=k=>buildPdf(reportData(k));
+
+window.lgBuildPdf=k=>buildPdf(reportData(k));window.lgReportData=k=>reportData(k);
 
 $('rp-pdf').onclick=async()=>{
   const b=$('rp-pdf'),old=b.textContent;b.textContent='Making…';b.disabled=true;
@@ -2082,7 +2273,7 @@ $('rp-pdf').onclick=async()=>{
   b.textContent=old;b.disabled=false;
 };
 /* a link from the monthly email opens that month's report */
-function reportFromHash(){const m=/^#report=(\d{4}-\d{2})$/.exec(location.hash);if(m&&allData.length){history.replaceState(null,'',location.pathname+location.search);openReport(m[1]);}}
+function reportFromHash(){const m=/^#report=(\d{4}-\d{2}|last)$/.exec(location.hash);if(m&&allData.length){history.replaceState(null,'',location.pathname+location.search);openReport(m[1]==='last'?lastClosedMonth():m[1]);}}
 window.addEventListener('hashchange',reportFromHash);
 
 const prevRA2=renderAll;
@@ -2096,12 +2287,12 @@ renderAll=function(){
     if(!allData.length)renderChips();
     renderSettings();renderWho();
     REG.forEach(applySort);
-    applyView();renderRepCard();
+    applyView();renderRepCard();renderNotes();
     if(!$('rp').hidden)renderReport();
   }catch(e){console.error(e);}
 };
 window.lgGoView=goView;
-window.lgAfterSync=()=>{try{renderSettings();}catch(e){}};
+window.lgAfterSync=arrived=>{try{renderSettings();}catch(e){}try{notePartner(arrived||[]);runNotes();}catch(e){console.error(e);}};
 setTimeout(reportFromHash,600);
 /* a new year opens on its own tab, even when the app was left open in the background over New Year */
 let seenYear=new Date().getFullYear();
@@ -2116,16 +2307,34 @@ try{
     if(/^https:\/\/script\.google\.com\//.test(o.u)&&o.t){
       localStorage.setItem(SYNC,JSON.stringify({url:o.u,token:o.t}));
       localStorage.setItem('lg-ledger-seeded','1');   // joiners get the shared Sheet's data, never a built-in copy
+      try{sessionStorage.setItem('lg-joined','1');}catch(e){}
     }
     history.replaceState(null,'',location.pathname+location.search);
   }
 }catch(e){}
-// Recover the selected ledger cache after a reload. Older unscoped installations
-// are left intact until the user explicitly connects to a ledger.
-try{const id=localStorage.getItem(ACCOUNT_ACTIVE);if(id){
-  const cached=JSON.parse(localStorage.getItem('lg-account-cache-v2:'+id)||'null');
-  if(cached){ACCOUNT_KEYS.forEach(k=>cached[k]==null?localStorage.removeItem(k):localStorage.setItem(k,cached[k]));CFG=JSON.parse(localStorage.getItem(CFGKEY)||'{}');_ppl=null;}
-}}catch(e){}
+/* Line the stored data up with the ledger this phone is signed in to. Nothing is ever restored over live data. */
+try{
+  const od=stashKey('original-device');                      /* set aside by versions 24 to 26 */
+  if(localStorage.getItem(od)){
+    /* keep it only if it holds entries the current ledger does not have: otherwise it is just an old copy of the same ledger */
+    let extra=false;
+    try{const old=JSON.parse(JSON.parse(localStorage.getItem(od))[KEY]||'[]'),have={};
+      JSON.parse(localStorage.getItem(KEY)||'[]').forEach(r=>{have[r.id]=1;});Object.keys(JSON.parse(localStorage.getItem(TOMB)||'{}')||{}).forEach(id=>{have[id]=1;});
+      extra=old.some(r=>!have[r.id]);}catch(e){}
+    if(extra&&!hasStash(DEVICE)&&activeAccount()!==DEVICE)localStorage.setItem(stashKey(DEVICE),localStorage.getItem(od));
+    localStorage.removeItem(od);
+  }
+  if(localStorage.getItem(ACCOUNT_ACTIVE)==='signed-out'){
+    localStorage.setItem(ACCOUNT_ACTIVE,'legacy:none');accountMove(DEVICE,false);
+  }
+  const c=JSON.parse(localStorage.getItem(SYNC)||'null'),want=c&&c.url?accountId('legacy',c.url):null;
+  if(want&&want!==activeAccount()){
+    const joined=!!sessionStorage.getItem('lg-joined');
+    accountMove(want,activeAccount()===DEVICE&&!joined,true);
+  }
+  if(want)localStorage.setItem('lg-ledger-seeded','1');
+  const act=activeAccount();if(act!==DEVICE)localStorage.removeItem(stashKey(act));   /* stale periodic copies from versions 24 to 26 */
+}catch(e){}
 allData=loadSaved();
 try{
   if(!localStorage.getItem(CFGKEY)&&allData.length){
@@ -2139,7 +2348,8 @@ try{tomb=JSON.parse(localStorage.getItem(TOMB)||'{}')||{};}catch(e){tomb={};}
 try{if(!allData.length&&!localStorage.getItem('lg-ledger-seeded')){allData=seedRows();localStorage.setItem('lg-ledger-seeded','1');}}catch(e){}
 allData.forEach(r=>{if(!r.updated)r.updated=1;lastSig[r.id]=sig(r);});
 persist();
-const c0=cfg();if(c0){$('x-sync-url').value=toLogin(c0.url);$('x-sync-token').value=c0.token;}
+try{sessionStorage.removeItem('lg-joined');}catch(e){}
+const c0=cfg();if(c0&&c0.url){$('x-sync-url').value=toLogin(c0.url);$('x-sync-token').value=c0.token;}else{try{$('x-sync-url').value=localStorage.getItem('lg-last-login')||'';}catch(e){}}
 status();renderAll();
 if(c0)sync({quiet:true});
 refreshGold();

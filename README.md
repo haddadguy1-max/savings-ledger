@@ -1,26 +1,55 @@
-# Savings Ledger v26 — targeted reliability repairs (TEST BUILD)
+# Savings Ledger, version 27 (11 Nov 2026)
 
-## Confirmed defects repaired
-1. **Critical:** `shMerge` referenced `R` before its `const` declaration, throwing a ReferenceError and preventing successful settings sync. Corrected order and initial sync logic.
-2. **Critical:** the packaged legacy `Code.gs` had no `doGet`, so the legacy backend could not return rows/settings. Restored authenticated `doGet` returning both. **Redeploy Apps Script as a new version**; uploading the GitHub files alone does not update Apps Script.
-3. **Critical:** account isolation listed `lg-gold-history-v1` while the app actually uses `lg-goldhist-v1`. Corrected account-specific storage so gold history does not leak between ledgers on the same device.
-4. Historical API requests now check HTTP status and merge valid monthly observations into existing history rather than discarding previously saved months.
-5. Report month-end balance headline now uses the same market-valued figure as net worth, rather than a different cost-based balance with a misleading market label.
-6. Gold monthly calculations stop at the current month instead of displaying future-dated holdings.
+## Install
 
-## What this build does NOT claim
-- No historical API can guarantee every daily/monthly observation; older months can remain carried-forward estimates. Monthly averages are not month-end closes.
-- The Google OAuth client ID is still a placeholder and **Google sign-in is not enabled** until configured.
-- Live two-device synchronization, Google Sheets permissions, and real-money reconciliation have not been tested.
-- Gold purchase transfers and loan accounting still need a redesigned transaction model; do not trust net-worth reconciliation until those are addressed.
-- Google Sheets write operations are not atomic under simultaneous edits.
+**1. GitHub (the app).** Upload every file in this folder to the repository, replacing the old ones:
+`index.html`, `app-extras.js`, `google-drive.js`, `sw.js`, `manifest.json`, `version.json`, the three icons.
+`Code.gs`, `README.md` and the two `test_*.js` files are not needed on GitHub (they do no harm there, as long as
+`Code.gs` still has the placeholder password).
 
-## Safe installation and tests
-1. Back up the spreadsheet and current GitHub files. Do not delete the PWA or clear Safari data.
-2. Upload extracted ZIP contents to a **test** GitHub Pages repository.
-3. For legacy ledger users, replace Apps Script Code.gs, set the original TOKEN, and **Deploy > Manage deployments > Edit > New version**.
-4. Open test app, sign in, change savings goal, then inspect the Google Sheet `Settings` tab for `goal` and `fullDataConfig`.
-5. Repeat on a second device. Test logout/login, gold prices, and same-month report versus PDF.
-6. Check the developer console and network responses if a value fails to synchronize.
+**2. Google Sheet (the ledger script).** Open the Sheet, then Extensions, Apps Script.
+Copy your current `const TOKEN = '...'` line somewhere safe. Paste the whole of `Code.gs` over the old code.
+Put your own TOKEN line back. Then Deploy, Manage deployments, the pencil, Version: **New version**, Deploy.
+Saving the file is not enough: without a new version the app keeps talking to the old script.
+Google asks you to authorize once more, because the script now also fetches gold prices.
 
-Run `node test_calculations.js` and `node test_regressions.js` to repeat the static and calculation checks.
+**3. On each phone.** Open the app. A bar says "A new version is ready": tap Update now.
+Data, at the bottom, must show **Version 27 · 11 Nov 2026 · ledger script up to date**.
+Do not delete the app or clear Safari data.
+
+## What changed from version 26
+
+- Entries and settings can no longer be lost on reopening. Version 26 restored a copy saved every 12 seconds over
+  the live data each time the app started.
+- Signing in no longer hides what was on the phone or discards it. Signing out tucks the ledger away on the phone;
+  signing in again brings entries and settings straight back.
+- Settings sync is one key per setting, newest wins. The duplicate "fullDataConfig" key, which could bring an old
+  target back, is gone. A phone meeting a ledger for the first time takes the ledger's settings.
+- Gold: every month has a price. Market average when known (this phone, another phone, or the ledger script),
+  latest price for the current month, and otherwise an estimate between the nearest known prices, always marked.
+  Nothing shows "Unavailable" and no chart stops halfway.
+- Report: one set of figures for the screen and the PDF. The net worth bridge adds up to the dollar.
+  PDF charts are drawn as lines and bars, not as pictures of a hidden canvas.
+- Notifications: five alerts worked out on the phone, plus calendar reminders for when the app is closed.
+- Updates: pages and scripts are always asked from the site first; a version check shows the update bar.
+- Ledger script 3: settings, weekly backup tabs, gold prices tab. No email.
+
+## Settings tab of the Sheet (one row each: Setting, Value, Updated)
+
+`people`, `title`, `goal`, `startSaving`, `goldKarat`, `goldMode`, `goldManual` (today's typed price),
+`goldMan` (prices typed for a month), `goldHistory` (market monthly averages shared between phones).
+Values are JSON. Rows left by earlier versions (`fullDataConfig`, `delivery`, `reportEmails`, `appUrl`) are ignored.
+
+## Tested here
+
+`node test_calculations.js`, `node test_regressions.js`, and a browser run at iPhone size against a stand-in for the
+ledger script: 52 checks over three phones and two ledgers (reload, sign in, second phone, settings both ways,
+offline and back, bad reply, wrong password, sign out and in, two ledgers kept apart, invite link, leftovers of
+versions 24 to 26, report against PDF for four months).
+
+## Not tested here
+
+- The real Google Apps Script, a real iPhone, and GitHub Pages. This workspace has no access to them.
+- The live price services (gold-api.com, freegoldapi.com, Yahoo). They were stood in for.
+- Charts on screen were run with a stand-in for Chart.js. PDF charts were rendered and looked at.
+- "Sign up with Google" stays hidden until a Google OAuth client ID is put in `google-drive.js`.
