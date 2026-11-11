@@ -102,7 +102,9 @@ document.body.insertAdjacentHTML('beforeend',`
    <input id="x-amt" class="x-input" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
   <div id="x-goldbox" hidden><div class="x-row">
    <div><label class="x-label" for="x-g">Grams</label><input id="x-g" class="x-input" inputmode="decimal" autocomplete="off" placeholder="0"></div>
-   <div><label class="x-label" for="x-p">USD per gram</label><input id="x-p" class="x-input" inputmode="decimal" autocomplete="off" placeholder="0.00"></div></div>
+   <div><label class="x-label" for="x-p">Purchase price per gram (USD)</label><input id="x-p" class="x-input" inputmode="decimal" autocomplete="off" placeholder="0.00"></div></div>
+   <label class="x-label" for="x-total-paid">Or total amount paid (USD, including fees)</label><input id="x-total-paid" class="x-input" inputmode="decimal" autocomplete="off" placeholder="Optional — enter total paid instead of price/gram">
+   <p class="x-note" style="margin:6px 0 12px">Enter either the purchase price per gram or the full amount you paid. The total includes any dealer fees or premium. Market value is calculated separately using the live gold price.</p>
    <label class="x-label" for="x-k">Purity</label><select id="x-k" class="x-input"><option value="">Default (set in Gold valuation)</option><option value="24">24k</option><option value="22">22k</option><option value="21">21k</option><option value="18">18k</option></select></div>
   <label class="x-label" for="x-date">Date</label><input type="date" id="x-date" class="x-input">
   <p class="x-prev" id="x-prev"></p><p class="x-err" id="x-err" role="alert"></p>
@@ -262,7 +264,7 @@ function setKind(k){S.kind=k;document.querySelectorAll('#x-kinds button').forEac
 function setWho(w){S.who=w||'';renderWho();}
 function preview(){
   let t='';
-  if(S.kind==='gold'){const g=num($('x-g').value),v=g*num($('x-p').value);if(v>0)t=`${g} g worth ${money2(v)} · net worth +${money2(v)}`;}
+  if(S.kind==='gold'){const g=num($('x-g').value),v=g*num($('x-p').value);if(v>0)t=`Purchase cost ${money2(v)} (${money2(num($('x-p').value))}/g). Market value and unrealized gain/loss are calculated separately.`;}
   else{const a=num($('x-amt').value);if(a>0)t={deposit:`Cash +${money2(a)} · net worth +${money2(a)}`,withdraw:`Cash −${money2(a)} · net worth −${money2(a)}`,
     loan_taken:`Loans +${money2(a)} · net worth −${money2(a)}`,loan_repaid:`Loans −${money2(a)} · net worth +${money2(a)}`}[S.kind];}
   $('x-prev').textContent=t;
@@ -274,11 +276,11 @@ function openSheet(row){
     const n=row.name||'',loan=n.includes('loan');
     setKind(loan?(row.usd<0?'loan_taken':'loan_repaid'):row.gold>0?'gold':(row.usd<0?'withdraw':'deposit'));
     setWho(people()[personIdx(row)]||'');
-    $('x-amt').value=row.gold>0?'':Math.abs(row.usd||0)||'';$('x-g').value=row.gold>0?row.gold:'';$('x-p').value=row.goldPrice||'';$('x-k').value=(/(\d{2})\s*k/i.exec(row.type||'')||['',''])[1];
+    $('x-amt').value=row.gold>0?'':Math.abs(row.usd||0)||'';$('x-g').value=row.gold>0?row.gold:'';$('x-p').value=row.goldPrice||'';$('x-total-paid').value=row.gold>0&&row.goldPrice>0?String(Math.round(row.gold*row.goldPrice*100)/100):'';$('x-k').value=(/(\d{2})\s*k/i.exec(row.type||'')||['',''])[1];
     $('x-date').value=toYMD(row.sortTs)||toYMD(Date.now());
   }else{
     setKind(pr.kind||'deposit');setWho(pr.who||'');
-    $('x-amt').value='';$('x-g').value='';$('x-p').value=pr.price||'';$('x-k').value=pr.karat||'';$('x-date').value=toYMD(Date.now());
+    $('x-amt').value='';$('x-g').value='';$('x-p').value=pr.price||'';$('x-total-paid').value='';$('x-k').value=pr.karat||'';$('x-date').value=toYMD(Date.now());
   }
   preview();$('x-scrim').hidden=false;$('x-sheet').hidden=false;document.body.style.overflow='hidden';
   setTimeout(()=>$(S.kind==='gold'?'x-g':'x-amt').focus(),60);
@@ -314,14 +316,15 @@ function submit(again){
   }else allData.push(row);
   writePrefs({kind:k,who:S.who});save();status();renderAll();
   toast(S.editId?'Entry updated':'Entry saved',true);
-  if(again){$('x-amt').value='';$('x-g').value='';preview();$('x-' + (k==='gold'?'g':'amt')).focus();}else closeSheet();
+  if(again){$('x-amt').value='';$('x-g').value='';$('x-total-paid').value='';preview();$('x-' + (k==='gold'?'g':'amt')).focus();}else closeSheet();
 }
 $('x-fab').onclick=()=>openSheet(null);$('x-empty').addEventListener('click',e=>{if(e.target.closest('button'))openSheet(null);});
 $('x-close').onclick=closeSheet;$('x-scrim').onclick=closeSheet;
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('x-sheet').hidden)closeSheet();});
 $('x-kinds').addEventListener('click',e=>{const b=e.target.closest('button');if(b)setKind(b.dataset.kind);});
 $('x-who').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.new){const n=addPerson(prompt('Name of the person'));if(n)setWho(n);}else setWho(b.dataset.who);});
-['x-amt','x-g','x-p'].forEach(id=>$(id).addEventListener('input',preview));
+['x-amt','x-g','x-p'].forEach(id=>$(id).addEventListener('input',()=>{if(id==='x-g'||id==='x-p'){const g=num($('x-g').value),p=num($('x-p').value);$('x-total-paid').value=g>0&&p>0?String(Math.round(g*p*100)/100):'';}preview();}));
+$('x-total-paid').addEventListener('input',()=>{const g=num($('x-g').value),total=num($('x-total-paid').value);$('x-p').value=g>0&&total>0?String(Math.round(total/g*1000000)/1000000):'';preview();});
 $('x-form').addEventListener('submit',e=>{e.preventDefault();submit(false);});
 $('x-again').onclick=()=>submit(true);
 document.querySelector('#tx-table').addEventListener('click',e=>{
@@ -355,8 +358,8 @@ $('x-clear').onclick=()=>{
 let skipRaw=false;
 $('x-data').insertAdjacentHTML('beforebegin',`<div class="section" id="x-raw"><details id="x-raw-d">
  <summary>Raw data <span id="x-raw-n"></span><span class="hint">tap any cell to edit, changes save as you go</span></summary>
- <div class="table-container" style="margin-top:10px"><table id="x-raw-table"><thead><tr><th>Date</th><th>Type</th><th class="r">Grams</th><th class="r">EUR</th><th class="r">USD</th><th>Name</th><th class="r">Gold price</th><th aria-label="Delete"></th></tr></thead><tbody></tbody></table></div>
- <p class="x-note">Dates read as dd/mm/yyyy, with an optional time. A name containing “loan” makes the row a loan: a negative USD amount is borrowed, a positive one is repaid. Gold rows use grams × gold price.</p>
+ <div class="table-container" style="margin-top:10px"><table id="x-raw-table"><thead><tr><th>Date</th><th>Type</th><th class="r">Grams</th><th class="r">EUR</th><th class="r">USD</th><th>Name</th><th class="r">Gold purchase price / g</th><th aria-label="Delete"></th></tr></thead><tbody></tbody></table></div>
+ <p class="x-note">Dates read as dd/mm/yyyy, with an optional time. A name containing “loan” makes the row a loan: a negative USD amount is borrowed, a positive one is repaid. Gold rows store the original purchase price per gram (including fees when entered as a total); current market value is calculated separately.</p>
  <div class="x-btns"><button type="button" id="x-raw-add">+ Add blank row</button></div></details></div>`);
 const fmtN=v=>(v||v===0)&&v!==0?String(v):'';
 function renderRaw(){
@@ -810,7 +813,7 @@ function renderGoldChart(){
   /* purchases */
   const lots=allData.filter(isGoldRow).sort((a,b)=>b.sortTs-a.sortTs);
   $('x-lots-h').hidden=$('x-lots-box').hidden=!lots.length;
-  $('x-lots-note').textContent=lots.length?'Tap a purchase to edit it. Tap a month above to type its real price. A * on purity means the entry has none, so the default is used.':'Tap a month to type its real price.';
+  $('x-lots-note').textContent=lots.length?'Tap a purchase to edit its original buying price or total amount paid. Tap a month above to type its real price. A * on purity means the entry has none, so the default is used.':'Tap a month to type its real price.';
   $('x-lots-table').querySelector('tbody').innerHTML=lots.map(d=>{const p=(d.gold||0)*(d.goldPrice||0),w=goldNow(d),kk=kOf(d)||gset().karat,gn=p?w/p-1:null;
     return `<tr class="x-tap" data-id="${esc(d.id)}"><td data-v="${d.sortTs}"><strong>${esc((d.date||'').split(' ')[0])}</strong></td><td style="text-transform:capitalize">${esc(ownerKey(d.name))}</td>
      <td class="num" data-v="${d.gold}">${d.gold.toFixed(2)} g</td><td class="num" data-v="${kk}">${kk}k${kOf(d)?'':' *'}</td><td class="num" data-v="${d.goldPrice||0}">${d.goldPrice?money2(d.goldPrice):'—'}</td>

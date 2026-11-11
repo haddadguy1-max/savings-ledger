@@ -1,4 +1,4 @@
-const V='lg-ledger-v20-account-isolation';
+const V='lg-ledger-v21-gold-purchase-cost';
 const CORE=['./','index.html','app-extras.js','google-drive.js','manifest.json','icon-180.png','icon-192.png','icon-512.png'];
 const CDN=[
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',

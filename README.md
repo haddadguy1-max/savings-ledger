@@ -21,3 +21,12 @@ This is a **test build**, not a production security audit. It retains the origin
 - Google Sheets concurrent writes remain subject to races; do not edit on two devices simultaneously until hardened.
 - Test on two devices: account A target/name/gold/notifications, switch to B (all independent), switch back to A (all restored), then repeat on second device after sync.
 - This patch was syntax-checked, but **not live-tested against Google or Apps Script**.
+
+
+## Gold purchase cost upgrade (v21)
+
+- **New entry → Gold**: enter grams, purity, contributor, and either original purchase price per gram or **total amount paid including fees**. Changing total automatically calculates the effective per-gram cost; changing grams or price per gram updates the total.
+- **Existing gold**: go to Gold over time → purchase lots, tap the purchase, and enter the actual price paid or total amount paid. This edits the existing row, without adding a duplicate.
+- Original purchase cost is stored in the existing `goldPrice` transaction field and is synced with transactions to the connected sheet. No Google Sheets schema migration is needed. The saved cost per gram includes fees if total paid includes fees. The market value is computed independently, and gain/loss = market value minus original purchase cost.
+- The current transaction model treats a Gold entry as an increase in holdings/net worth. It **does not automatically deduct cash** to represent a transfer from existing cash. Do not count a cash-to-gold conversion as fresh savings; use an appropriate offsetting cash entry and verify the wealth bridge.
+- This is a test build. Back up your ledger and test one gold entry before using with real data.
