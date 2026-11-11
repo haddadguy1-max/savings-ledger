@@ -19,7 +19,7 @@ if(!document.querySelector('link[rel="apple-touch-icon"]'))headTag('link',{rel:'
 [['theme-color','#16232F'],['apple-mobile-web-app-capable','yes'],['mobile-web-app-capable','yes'],
  ['apple-mobile-web-app-title','Savings'],['apple-mobile-web-app-status-bar-style','default']]
  .forEach(([n,c])=>{if(!document.querySelector(`meta[name="${n}"]`))headTag('meta',{name:n,content:c});});
-const APPV='14';
+const APPV='23';
 let swReg=null,hadSW=!!(navigator.serviceWorker&&navigator.serviceWorker.controller),updShown=false;
 function showUpdate(){
   if(updShown)return;updShown=true;
@@ -179,7 +179,7 @@ const LF={who:'',cat:'',year:''};
 const kOf=d=>{const m=/(\d{2})\s*k/i.exec(d.type||'');return m?+m[1]:0;};
 const isLoanRow=d=>isLoanName(d.name);
 const isGoldRow=d=>!isLoanRow(d)&&(d.gold||0)>0;
-const goldNow=d=>{const p=px24();return p>0?(d.gold||0)*p*rowKarat(d)/24:(d.gold||0)*(d.goldPrice||0);};
+const goldNow=d=>{const p=px24();return p>0?(d.gold||0)*p*rowKarat(d)/24:(d.gold||0)*(d.goldPrice||0);}; // Cost-basis fallback, NOT a market quote
 function lfPass(d){
   const n=d.name||'',loan=isLoanRow(d),gold=isGoldRow(d);
   if(LF.who&&ownerKey(n)!==LF.who)return false;
@@ -289,12 +289,14 @@ function closeSheet(){$('x-sheet').hidden=true;$('x-scrim').hidden=true;document
 function submit(again){
   const err=$('x-err');err.textContent='';
   const ymd=$('x-date').value;if(!ymd){err.textContent='Pick a date.';return;}
+  if(ymd>toYMD(Date.now())){err.textContent='Future-dated transactions are not supported in the historical report.';return;}
   const [y,m,d]=ymd.split('-').map(Number),now=new Date();
   const date=`${p2(d)}/${p2(m)}/${y} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
   const k=S.kind,row={id:S.editId||uid(),date,sortTs:parseSortDate(date),yyyyMM:parseDateToYYYYMM(date),type:'Cash USD',gold:0,eur:0,usd:0,goldPrice:0,name:S.who.toLowerCase()};
   if(!S.who){err.textContent='Choose who this is for, or tap + New to add a name.';return;}
   if(k==='gold'){
     const g=num($('x-g').value),p=num($('x-p').value);
+    if(!Number.isFinite(g)||!Number.isFinite(p)||g<=0||p<=0){err.textContent='Gold grams and total purchase price must be positive finite numbers.';return;}
     if(!(g>0)||!(p>0)){err.textContent='Enter grams and a price per gram above zero.';return;}
     const kt=$('x-k').value;row.type=kt?`Gold ${kt}k`:'Gold';row.gold=g;row.goldPrice=p;writePrefs({price:p,karat:kt});
   }else{
@@ -324,7 +326,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('x-sheet').hidde
 $('x-kinds').addEventListener('click',e=>{const b=e.target.closest('button');if(b)setKind(b.dataset.kind);});
 $('x-who').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.new){const n=addPerson(prompt('Name of the person'));if(n)setWho(n);}else setWho(b.dataset.who);});
 ['x-amt','x-g','x-p'].forEach(id=>$(id).addEventListener('input',()=>{if(id==='x-g'||id==='x-p'){const g=num($('x-g').value),p=num($('x-p').value);$('x-total-paid').value=g>0&&p>0?String(Math.round(g*p*100)/100):'';}preview();}));
-$('x-total-paid').addEventListener('input',()=>{const g=num($('x-g').value),total=num($('x-total-paid').value);$('x-p').value=g>0&&total>0?String(Math.round(total/g*1000000)/1000000):'';preview();});
+$('x-total-paid').addEventListener('input',()=>{const g=num($('x-g').value),total=num($('x-total-paid').value);$('x-p').value=g>0&&total>0?String(Math.round(total/g*100000000)/100000000):'';preview();});
 $('x-form').addEventListener('submit',e=>{e.preventDefault();submit(false);});
 $('x-again').onclick=()=>submit(true);
 document.querySelector('#tx-table').addEventListener('click',e=>{
@@ -545,6 +547,8 @@ window.addEventListener('online',()=>{if(cfg())sync({quiet:true});});
 
 /* ---------- gold valuation: market price instead of purchase price ---------- */
 const GKEY='lg-gold-v1',OZ=31.1034768;
+const GOLD_REFRESH_MS=24*60*60*1000; // One verified refresh per day while app is opened
+const goldPriceFresh=g=>g&&g.px>0&&g.via==='live'&&g.at>0&&Date.now()-g.at<GOLD_REFRESH_MS;
 const gDefault={mode:'market',karat:21,manual:'',px:0,at:0};
 const gset=()=>{try{const o=Object.assign({},gDefault,JSON.parse(localStorage.getItem(GKEY)||'{}'));if(!o.kset)o.karat=21;return o;}catch(e){return Object.assign({},gDefault);}};   /* 21k until someone picks another purity */
 const gsave=o=>{try{localStorage.setItem(GKEY,JSON.stringify(Object.assign(gset(),o)));}catch(e){}};
@@ -552,7 +556,8 @@ const gsave=o=>{try{localStorage.setItem(GKEY,JSON.stringify(Object.assign(gset(
 function px24(){
   const g=gset();if(g.mode!=='market')return 0;
   const m=num(g.manual);if(m>0)return m*24/g.karat;
-  return g.px;
+  // A stale cached price is not a current market quotation.
+  return goldPriceFresh(g)?g.px:0;
 }
 const rowKarat=r=>{const m=/(\d{2})\s*k/i.exec(r.type||'');const k=m?+m[1]:0;return(k>=8&&k<=24)?k:gset().karat;};
 const baseCompute=computeAnalytics;
@@ -602,7 +607,7 @@ function goldStatus(extra){
     /* without gold entries the changes still come from the price history */
     const nk=toYMD(Date.now()).slice(0,7),pm=monthPx(addMonths(nk,-1)),py=monthPx(addMonths(nk,-12)),pd=monthPx(`${+nk.slice(0,4)-1}-12`);
     const mom=last&&last.mom!=null?last.mom:(p&&pm?p/pm-1:null),yoy=last&&last.yoy!=null?last.yoy:(p&&py?p/py-1:null),ytdv=last&&last.ytd!=null?last.ytd:(p&&pd?p/pd-1:null);
-    const src=manual?'your typed price':(g.via==='ledger'?'from your ledger, not live':'live price');
+    const src=manual?'manual (not verified market data)':(goldPriceFresh(g)?'verified live feed':'cached / stale, not live');
     $('xg-now').innerHTML=p>0
       ?`<div class="xg-top"><div><div class="xg-l">Price per gram, ${k}k</div><div class="xg-v">${money2(p*k/24)}</div></div><button type="button" class="xg-ref" id="xg-ref" aria-label="Refresh price">↻</button></div>
         <div class="xg-ks">${KS.map(x=>`<button type="button" data-k="${x}" class="${x===k?'active':''}">${x}k${x===g.karat?'<b>·</b>':''}</button>`).join('')}</div>
@@ -614,18 +619,19 @@ function goldStatus(extra){
     else{
       let grams=0,paid=0,now=0;const byK={};
       rows.forEach(r=>{const kk=kOf(r)||g.karat;grams+=r.gold;paid+=r.gold*(r.goldPrice||0);now+=goldNow(r);byK[kk]=(byK[kk]||0)+r.gold;});
-      const gain=now-paid,net=computeAnalytics(allData).net;
+      const hasMarket=px24()>0;const gain=hasMarket?now-paid:null,net=computeAnalytics(allData).net;
       hold.hidden=false;
       hold.innerHTML=`<div class="xg-h">Your gold <span class="x-src mix">Ours × market</span></div>
         <div class="xg-grid"><div><span>Holding</span><b>${grams.toFixed(1)} g</b><em>${Object.keys(byK).sort((a,b)=>b-a).map(x=>`${byK[x].toFixed(1)} g of ${x}k`).join(', ')}</em></div>
-        <div><span>Worth now</span><b>${money0(now)}</b><em>${net>0?Math.round(now/net*100)+'% of net worth':''}</em></div>
+        <div><span>Worth now</span><b>${hasMarket?money0(now):'Price unavailable'}</b><em>${net>0?Math.round(now/net*100)+'% of net worth':''}</em></div>
         <div><span>Paid</span><b>${money0(paid)}</b><em>${rows.length} purchase${rows.length>1?'s':''}</em></div>
-        <div><span>Gain</span><b class="${gain>=0?'pos':'neg'}">${signed0(gain)}</b><em class="${gain>=0?'pos':'neg'}">${paid?(gain>=0?'+':'−')+Math.abs(gain/paid*100).toFixed(1)+'% on what you paid':''}</em></div></div>`;
+        <div><span>Gain</span><b class="${gain!=null&&gain>=0?'pos':'neg'}">${gain==null?'—':signed0(gain)}</b><em>${gain!=null&&paid?(gain>=0?'+':'−')+Math.abs(gain/paid*100).toFixed(1)+'% on what you paid':'Needs current market quote and recorded cost'}</em></div></div>`;
     }
   }catch(e){console.error(e);}
   if(g.mode!=='market')t='valued at what you paid';
   else if(num(g.manual)>0)t='your typed price';
-  else if(g.px>0)t=g.via==='ledger'?'from your ledger':'live';
+  else if(goldPriceFresh(g))t='live · updated within 24h';
+  else if(g.px>0)t='cached price expired · refresh needed';
   else t='no price yet';
   $('x-gold-status').textContent=t+(extra?' · '+extra:'');
 }
@@ -634,15 +640,28 @@ $('x-gold').addEventListener('click',e=>{
   if(b.dataset.k){GV.k=+b.dataset.k;goldStatus();try{renderGoldChart();}catch(x){}}
   else if(b.id==='xg-ref')$('x-gold-refresh').click();
 });
-async function fetchGold(){
-  let oz=0;
-  try{const r=await fetch('https://api.gold-api.com/price/XAU',{cache:'no-store'});oz=Number((await r.json()).price);}catch(e){oz=0;}
-  if(oz>500&&oz<20000){
-    gsave({px:oz/OZ,at:Date.now(),via:'live'});const k=toYMD(Date.now()).slice(0,7),sn=(hget().snap)||{};sn[k]=oz/OZ;hsave({snap:sn});return true;
-  }
-  const sv=hget().srv;   /* second source: the price the ledger fetched */
-  if(sv&&sv.px>0&&Date.now()-sv.at<36*3600*1000){gsave({px:sv.px,at:sv.at,via:'ledger'});return true;}
-  return false;
+let goldFetchPending=null;
+async function fetchGold(force=false){
+  const existing=gset();
+  if(!force&&goldPriceFresh(existing))return true;
+  if(goldFetchPending)return goldFetchPending;
+  goldFetchPending=(async()=>{
+    try{
+      const r=await fetch('https://api.gold-api.com/price/XAU',{cache:'no-store'});
+      if(!r.ok)throw new Error('Gold API HTTP '+r.status);
+      const data=await r.json();
+      const oz=Number(data.price);
+      if(!Number.isFinite(oz)||oz<=500||oz>=20000)throw new Error('Invalid spot price');
+      const price=oz/OZ;
+      const now=Date.now();
+      gsave({px:price,at:now,via:'live'});
+      const k=toYMD(now).slice(0,7),sn=(hget().snap)||{};
+      // A live observation is a daily snapshot, not a historical monthly average.
+      sn[k]=price;hsave({snap:sn});
+      return true;
+    }catch(e){console.warn('Gold price refresh failed:',e.message);return false;}
+  })();
+  try{return await goldFetchPending;}finally{goldFetchPending=null;}
 }
 async function refreshGold(){
   if(gset().mode!=='market'||num(gset().manual)>0){goldStatus();return;}
@@ -679,8 +698,8 @@ const gm=gset();$('x-gold-mode').value=gm.mode;$('x-gold-karat').value=String(gm
 $('x-gold-mode').onchange=e=>{gsave({mode:e.target.value});goldStatus();renderAll();if(e.target.value==='market')refreshGold();};
 $('x-gold-karat').onchange=e=>{gsave({karat:+e.target.value,kset:true});goldStatus();renderAll();};
 $('x-gold-manual').onchange=e=>{gsave({manual:e.target.value.trim()});goldStatus();renderAll();if(!e.target.value.trim())refreshGold();};
-$('x-gold-refresh').onclick=async()=>{const ok=await fetchGold();goldStatus(ok?'':'live price unavailable');renderAll();toast(ok?'Gold price refreshed':'Could not reach the price service. Type a price instead.');};
-setInterval(()=>{if(!document.hidden)refreshGold();},15*60000);
+$('x-gold-refresh').onclick=async()=>{const ok=await fetchGold(true);goldStatus(ok?'':'live price unavailable');renderAll();toast(ok?'Gold price refreshed':'Live feed unavailable. Previous prices are not treated as live.');};
+setInterval(()=>{if(!document.hidden&&!goldPriceFresh(gset()))refreshGold();},60*60000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshGold();});
 
 /* ---------- gold price history: monthly price, your gold value, and what moved it ---------- */
@@ -701,30 +720,21 @@ async function fetchGoldHistory(force){
   }catch(e){return false;}
 }
 function monthPx(k){const h=hget();return(h.man&&h.man[k])||(h.m&&h.m[k])||(h.srv&&h.srv.months&&h.srv.months[k])||(h.snap&&h.snap[k])||0;}
-/* One row per month from the first gold purchase: 24k price, the value of the gold held, and the moves in %.
-   A month's price is, in order: one you typed, the market average, today's live price (current month), what you paid that month.
-   Months with none of these are estimated by spreading the price evenly between the nearest known months, never held flat. */
+/* One row per month from first gold purchase. Use observed monthly history,
+   manually entered prices (labeled), or current live price. Never invent prices. */
 function goldMonthly(rows){
   const g=rows.filter(r=>!(r.name||'').includes('loan')&&(r.gold||0)>0&&r.yyyyMM);
   if(!g.length)return [];
-  const paid={};g.forEach(r=>{if(r.goldPrice>0){const p=r.goldPrice*24/(kOf(r)||gset().karat);(paid[r.yyyyMM]=paid[r.yyyyMM]||[]).push(p);}});
+  // Purchase costs are kept separately from observed market prices.
   const first=g.map(r=>r.yyyyMM).sort()[0],nowK=toYMD(Date.now()).slice(0,7);
   const lastRow=g.map(r=>r.yyyyMM).sort().pop(),end=nowK>lastRow?nowK:lastRow,n=monthsBetween(first,end);
   const hh=hget(),base=[];
   for(let i=0;i<=n;i++){
     const k=addMonths(first,i);let px=monthPx(k),src=(hh.man&&hh.man[k])?'manual':'market';
-    if(k===nowK&&src!=='manual'){const lv=px24()||gset().px;if(lv>0){px=lv;src='live';}}
-    if(!px&&paid[k]){px=paid[k].reduce((a,b)=>a+b,0)/paid[k].length;src='paid';}
-    base.push({k,px:px||0,src:px?src:'est'});
-  }
-  /* estimate the gaps */
-  for(let i=0;i<base.length;i++){
-    if(base[i].px)continue;
-    let lo=i-1;while(lo>=0&&!base[lo].px)lo--;
-    let hi=i+1;while(hi<base.length&&!base[hi].px)hi++;
-    if(lo>=0&&hi<base.length)base[i].px=base[lo].px+(base[hi].px-base[lo].px)*(i-lo)/(hi-lo);
-    else if(lo>=0)base[i].px=base[lo].px;
-    else if(hi<base.length)base[i].px=base[hi].px;
+    if(k===nowK&&src!=='manual'){const lv=px24();if(lv>0){px=lv;src='live';}else if(!goldPriceFresh(gset())){px=0;src='unavailable';}}
+    // Purchase prices are NOT market observations. Missing market history stays missing.
+    // Never silently interpolate, extrapolate or replace a spot price with a paid price.
+    base.push({k,px:px||0,src:px?src:'unavailable'});
   }
   const out=[];let pxPrev=0,unitsPrev=0;
   base.forEach(({k,px,src},i)=>{
@@ -733,8 +743,8 @@ function goldMonthly(rows){
     const value=px?units*px:null;
     const ly=monthPx(addMonths(k,-12)),dec=monthPx(`${+k.slice(0,4)-1}-12`);
     out.push({k,px:px||null,src,grams,cost,units,value,
-      mom:(px&&pxPrev)?px/pxPrev-1:null,yoy:(px&&ly)?px/ly-1:null,ytd:(px&&dec)?px/dec-1:null,
-      priceEffect:(px&&pxPrev&&i>0)?unitsPrev*(px-pxPrev):(i===0&&px?0:null),
+      mom:(px&&i>0&&base[i-1].px)?px/base[i-1].px-1:null,yoy:(px&&ly)?px/ly-1:null,ytd:(px&&dec)?px/dec-1:null,
+      priceEffect:(px&&i>0&&base[i-1].px)?unitsPrev*(px-base[i-1].px):null,
       bought:px?newUnits*px:null});
     if(px){pxPrev=px;}unitsPrev=units;
   });
@@ -761,8 +771,8 @@ function priceSeries(){
   const nk=toYMD(Date.now()).slice(0,7),out=[];let prev=0;
   for(let k=known[0];k<=nk;k=addMonths(k,1)){
     const r=gm[k];let px=r?r.px:monthPx(k),src=r?r.src:'market';
-    if(k===nk&&!r){const lv=px24()||gset().px;if(lv>0){px=lv;src='live';}}
-    if(!px){if(!prev)continue;px=prev;src='est';}
+    if(k===nk&&!r){const lv=px24();if(lv>0){px=lv;src='live';}}
+    if(!px)continue; // Missing months must be gaps, not fabricated flat prices.
     out.push({k,px,src});prev=px;
   }
   return out;
@@ -803,13 +813,13 @@ function renderGoldChart(){
   /* month by month: your holding months, or the price alone before you hold any */
   const rowsT=(all.length?all:ps.map((r,i)=>({k:r.k,px:r.px,src:r.src,mom:i?r.px/ps[i-1].px-1:null,yoy:monthPx(addMonths(r.k,-12))?r.px/monthPx(addMonths(r.k,-12))-1:null,ytd:monthPx(`${+r.k.slice(0,4)-1}-12`)?r.px/monthPx(`${+r.k.slice(0,4)-1}-12`)-1:null,value:null,priceEffect:null,bought:null}))).slice(-n);
   $('x-gold-table').querySelector('tbody').innerHTML=[...rowsT].reverse().map(r=>`<tr data-k="${r.k}" class="x-tap"><td data-v="${r.k.replace('-','')}"><strong>${lab(r)}</strong></td>
-    <td class="num" data-v="${r.px*k/24}">${money2(r.px*k/24)}</td>${pcell(r.mom)}${pcell(r.yoy)}${pcell(r.ytd)}
+    <td class="num" data-v="${r.px*k/24}">${r.px?money2(r.px*k/24):'—'}</td>${pcell(r.mom)}${pcell(r.yoy)}${pcell(r.ytd)}
     <td class="num" data-v="${r.value==null?'':r.value}">${r.value==null?'—':money0(r.value)}</td>
     <td class="num ${r.priceEffect==null?'':(r.priceEffect>=0?'pos':'neg')}" data-v="${r.priceEffect==null?'':r.priceEffect}">${r.priceEffect==null?'—':signed0(r.priceEffect)}</td>
     <td class="num" data-v="${r.bought||0}">${r.bought?signed0(r.bought):'—'}</td></tr>`).join('');
-  const h=hget(),nm=Math.max(h.m?Object.keys(h.m).length:0,h.srv&&h.srv.months?Object.keys(h.srv.months).length:0),est=rowsT.some(r=>r.src==='paid'||r.src==='est');
-  $('x-goldhist-note').textContent=`Prices are per gram of ${k}k. `+(nm?`Past months use the market price for the month (${nm} months loaded); the current month uses today's price. `:'Market price history could not be loaded, so months use what you paid that month, or an estimate between the nearest known months. ')
-    +(est?'A * marks a month without a market price. ':'')+'Price effect is what the gold you already held gained or lost; Bought is gold added that month.';
+  const h=hget(),nm=Math.max(h.m?Object.keys(h.m).length:0,h.srv&&h.srv.months?Object.keys(h.srv.months).length:0),est=rowsT.some(r=>!r.px);
+  $('x-goldhist-note').textContent=`Prices are per gram of ${k}k. `+(nm?`Past months use the market price for the month (${nm} months loaded); the current month uses today's price. `:'Market history unavailable; missing months are not valued using purchase costs or invented estimates. ')
+    +(est?'A * marks a month without verified market history. ':'')+'Price effect is what the gold you already held gained or lost; Bought is gold added that month.';
   /* purchases */
   const lots=allData.filter(isGoldRow).sort((a,b)=>b.sortTs-a.sortTs);
   $('x-lots-h').hidden=$('x-lots-box').hidden=!lots.length;
@@ -834,8 +844,8 @@ $('x-gold-table').addEventListener('click',e=>{
 $('x-gh-retry').onclick=()=>{fetchGoldHistory(true).then(ok=>{toast(ok?'Price history loaded':'Could not load price history. Try again later.',false);renderAll();});};
 const prevRA=renderAll;
 renderAll=function(){prevRA();try{goldStatus();renderGoldChart();}catch(e){console.error(e);}};
-setInterval(()=>{if(!document.hidden)refreshGold();},10*60*1000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-(gset().at||0)>5*60*1000)refreshGold();});
+// Refresh already scheduled above; avoid duplicate API calls.
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!goldPriceFresh(gset()))refreshGold();});
 setInterval(()=>{if(!document.hidden)fetchGoldHistory().then(ok=>{if(ok&&!busy())renderAll();});},3600*1000);
 
 /* ---------- settings shared between phones through the ledger ----------
@@ -1492,7 +1502,7 @@ const XV=[
    const l=list[list.length-1],f0=list[0];
    return {cols:['Month','24k / g',`${k}k / g`,'vs last month','vs last year','Year to date'],rows,
     insight:`Gold is at <b>${money2(l.px*k/24)}</b> per gram of ${k}k, ${pctTxt(l.px/f0.px-1)} since ${lbl(f0.k)}${l.mom!=null?`, ${pctTxt(l.mom)} on last month`:''}.`,
-    note:'Market data. Past months are monthly averages; the current month is today’s live price. A * marks a month without a market price (your purchase price, or an estimate between known months); tap that month in the Gold tab to type the real one.',
+    note:'Historical market prices are shown only when available from the market feed or manually entered. Missing months are not estimated or replaced with purchase prices. Current-month prices may change.',
     chart:{type:'line',data:{labels:list.map(r=>lbl(r.k)),datasets:[
       {label:`${k}k per gram`,data:list.map(r=>r.px*k/24),borderColor:C.gold,backgroundColor:'rgba(185,137,47,0.12)',fill:true,tension:.3,borderWidth:2.4,pointRadius:list.map(r=>r.src==='market'||r.src==='live'||r.src==='manual'?2.5:0)}]},
       options:(()=>{const o=opt();o.scales.y.ticks.callback=v=>'$'+Math.round(v);o.plugins.tooltip.callbacks={label:c=>` ${c.dataset.label}: ${money2(c.raw)}`};return o;})()}};
@@ -1720,7 +1730,7 @@ function reportData(k){
       ['Gold market price effect',goldPriceEffect==null?'Not available':signedMoney(goldPriceEffect)],
       ['Other changes / reconciliation',bridgeResidual==null?'Not available':signedMoney(bridgeResidual)],
       ['Closing net worth',money0(net)]],boldLast:true,
-      note:goldPriceEffect==null?'Gold price impact cannot be isolated without a comparable price for both months.':'The reconciliation line is shown explicitly instead of attributing unexplained changes to contributions. Gold purchases are not counted as market gains.'});
+      note:goldPriceEffect==null?'Gold price impact cannot be isolated without market prices for both months. Other / reconciliation is NOT a verified income or gain.':'Other / reconciliation is an unexplained accounting difference, not a verified gain. Check cash-to-gold transfers and loan entries.'});
   }
   if(gmAll.length){
     const hist=gmAll.filter(x=>x.k<=k).slice(-18),cGold='#B68B3E',cCost='#346F9E',cMarket='#267C6A';
@@ -1734,7 +1744,7 @@ function reportData(k){
       ['Gold market value',signedMoney(currentGoldValue-priorGoldValue),money0(goldW)],
       ['Gold price-only effect',goldPriceEffect==null?'—':signedMoney(goldPriceEffect),'—'],
       ['Unrealized gain / loss', '—',signedMoney(goldW-goldCost)]],
-      note:'The market-value change includes both purchases and price movement. The price-only effect excludes newly purchased gold. Historical prices may be estimated or manually entered.'});
+      note:'The market-value change includes purchases and price movement. The price-only effect is available only when both consecutive months have market prices. Missing prices are never inferred from what you paid.'});
     const buys=rows.filter(d=>d.sortTs<R.b&&!isLoanRow(d)&&(d.gold||0)>0).sort((a,b)=>b.sortTs-a.sortTs);
     if(buys.length)D.sections.push({type:'table',title:'Gold purchase ledger · recorded lots',cols:[['Date',0],['Contributor',0],['Gold',1],['Paid',1]],rows:buys.map(d=>[(d.date||'').split(' ')[0],cap(ownerKey(d.name))||'—',`${Number(d.gold||0).toFixed(2)} g`,money0((d.gold||0)*(d.goldPrice||0))]),note:'Purchase prices reflect amounts recorded in the ledger. For detailed purity and individual lot valuation, use Gold over time on the dashboard.'});
   }
@@ -1799,7 +1809,7 @@ function reportData(k){
   /* entries */
   D.sections.push({type:'table',title:`Entries in ${label}`,cols:[['Date',0],['Who',0],['Type',0],['Amount',1]],
     rows:ents.length?ents.map(d=>[(d.date||'').split(' ')[0],cap(ownerKey(d.name))||'—',isLoanRow(d)?'Loan':(d.gold>0?`Gold ${d.gold} g${kOf(d)?` ${kOf(d)}k`:''}`:'Cash'),tc(signed0(rowAmt(d)),rowAmt(d)>=0?'pos':'neg')]):[['No entries','','','']]});
-  D.foot='Saved, each person’s added amount and Gold bought count gold at what you paid. Balances and net worth count gold at the market price of the month.'+(R.y===firstYearAll()&&startSaving()!=null?` ${fmTxt()} counts as ${money0(startSaving())}, your real saving that month, not the savings brought in.`:'');
+  D.foot='Accounting warning: gold purchases are currently recorded as new holdings, not automatic cash-to-gold transfers; loan rows do not create matching cash entries. For a cash-funded gold purchase, record the cash outflow separately to avoid overstating net worth. Missing historical gold prices are not market estimates. '+ 'Saved, each person’s added amount and Gold bought count gold at what you paid. Balances and net worth count gold at the market price of the month.'+(R.y===firstYearAll()&&startSaving()!=null?` ${fmTxt()} counts as ${money0(startSaving())}, your real saving that month, not the savings brought in.`:'');
   return D;
 }
 
@@ -2024,7 +2034,7 @@ function buildOnePagePdf(D){
   txt(L,762,'Savings added',10,N);txt(L+218,762,fmt(cur.saved),10,N,true);txt(R,762,fmt(ytd.saved),10,N,true,'right');
   const remaining=Math.max(0,12-range.m),need=path&&remaining?(path.goal-actual)/remaining:null;
   const insight=target==null?'Set a savings goal in Data to unlock plan tracking.':(actual>=target?'Savings are ahead of the phased plan.':'Savings are below the phased plan.')+(need!=null?' Remaining monthly pace: '+fmt(Math.max(0,need))+'.':'');
-  txt(L,790,insight,8,M);txt(L,813,'Market gold values are estimates; internal asset transfers are not new savings.',7,M);
+  txt(L,790,insight,8,M);txt(L,813,'Gold values use available market observations; internal transfers must not be counted as new savings.',7,M);
   txt(R,813,'Generated '+new Date().toISOString().slice(0,10),7,M,false,'right');
   return P.bytes();
 }

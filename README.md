@@ -1,32 +1,33 @@
-# Savings Ledger — account isolation test (v20)
+# Savings Ledger v23 — daily gold price and calculation review
 
-This is a **test build**, not a production security audit. It retains the original dashboard, legacy ledger login, Google OAuth prototype, reports and notification settings.
+**TEST BUILD — DO NOT REPLACE LIVE FINANCIAL DATA WITHOUT BACKUP.**
 
-## What changed
-- Ledger-specific local snapshots now include transactions, tombstones, all main Data configuration, gold preferences/history, contributor data, report settings, and notification preferences.
-- Switching Google accounts or legacy ledgers swaps the local cache instead of carrying another account's values across.
-- Legacy credentials are checked before switching accounts.
-- Sign out clears the active ledger view while retaining a separate recoverable local cache.
-- Google spreadsheet ID is the Google account ledger key.
-- A fresh account does not push default settings to an existing remote ledger during first sync.
-- Notification permission remains per-device; the monthly preference is ledger-specific.
+## Implemented
+- Live 24K gold USD/troy-ounce quote requested from `https://api.gold-api.com/price/XAU` and converted to USD/gram using 31.1034768 grams/troy ounce; each lot is scaled by its recorded karat/24.
+- On opening the app, a live quote is requested if the last successful live quote is older than 24 hours; the app retries while open and on visibility changes. Refresh button forces a new request. This is **not** a background daily job while the app is closed.
+- Rejects failed HTTP responses and implausible/non-numeric quote values. Concurrent refreshes are deduplicated. No stale fallback is labeled live. Cached prices are not used as *today's* market quote after 24 hours.
+- Keeps gold acquisition cost separate from market price. Missing historical prices are not filled with purchase costs, interpolated, or carried forward on the price chart.
+- When no current quote is available, gold holdings panel shows **Price unavailable**, and unrealized gain is hidden rather than invented. The ledger's older cost-basis balance calculation is still used as a fallback and must not be interpreted as verified market value.
+- Service-worker cache bumped so browsers receive updated code.
 
-## Important limitations
-- **Do not deploy over your live website until tested.** Export your data and back up your repo.
-- Google OAuth still requires replacing the placeholder CLIENT_ID in google-drive.js and enabling Google APIs.
-- The browser's localStorage is **not encrypted**. A shared unlocked device can still expose locally cached financial information; account isolation prevents accidental cross-ledger mixing, not physical-device attacks.
-- Google tokens are held in memory and require reauthentication after reload.
-- Legacy login uses an existing script URL as ledger identifier. A separate legacy account migration mechanism is not included.
-- True scheduled push still requires a backend.
-- Google Sheets concurrent writes remain subject to races; do not edit on two devices simultaneously until hardened.
-- Test on two devices: account A target/name/gold/notifications, switch to B (all independent), switch back to A (all restored), then repeat on second device after sync.
-- This patch was syntax-checked, but **not live-tested against Google or Apps Script**.
+## Tests completed
+- `node --check app-extras.js` and `node --check google-drive.js` passed.
+- `node test_calculations.js` passed (cost basis, spot valuation, mixed purity, missing prices, stale price, manual override, history).
+- ZIP integrity verified.
 
+## NOT verified / remaining accounting blockers
+1. **Existing gold purchase entries do not specify their funding source.** Gold paid using existing recorded cash requires a matching cash reduction; gold bought using external funds does not. Historical funding cannot be guessed or safely backfilled. The current app does not implement atomic cash-to-gold transfers. Net worth and monthly contributions may be overstated without proper offsetting entries.
+2. **Loans are not full double-entry transactions**. Principal disbursement/repayment needs paired cash and liability changes. Historical loans need reconciliation.
+3. **Live market API and Google sign-in/sync have not been end-to-end tested against your private ledger or production iPhone.** The gold provider may be down, rate-limited, CORS-blocked, or provide an unexpected format; this is handled as unavailable rather than fabricated.
+4. Gold price history from `freegoldapi.com` is monthly average, not necessarily a month-end closing quote; individual daily historical records are not persisted by this version. Monthly snapshots may be incomplete and manual overrides are not independent verification.
+5. Google OAuth still requires the actual OAuth client ID. Concurrent Google Sheets edits and scheduled push notifications remain unresolved.
+6. Historical gold entries with missing cost or karat need user correction. Legacy reports use mixed savings/net-worth semantics and need transaction-level validation before being treated as audit-grade.
 
-## Gold purchase cost upgrade (v21)
+## Recommended safe rollout
+1. Export original ledger and back up GitHub and Google Sheet.
+2. Deploy ZIP to **test repository**, not production.
+3. Confirm live quote and timestamp in iPhone Safari and Home Screen PWA, test offline/expired quotes, and manually verify purchase lots and PDF report.
+4. Reconcile every historical gold purchase's funding source and every loan principal movement before trusting net worth.
+5. Test separate accounts and simultaneous devices before production release.
 
-- **New entry → Gold**: enter grams, purity, contributor, and either original purchase price per gram or **total amount paid including fees**. Changing total automatically calculates the effective per-gram cost; changing grams or price per gram updates the total.
-- **Existing gold**: go to Gold over time → purchase lots, tap the purchase, and enter the actual price paid or total amount paid. This edits the existing row, without adding a duplicate.
-- Original purchase cost is stored in the existing `goldPrice` transaction field and is synced with transactions to the connected sheet. No Google Sheets schema migration is needed. The saved cost per gram includes fees if total paid includes fees. The market value is computed independently, and gain/loss = market value minus original purchase cost.
-- The current transaction model treats a Gold entry as an increase in holdings/net worth. It **does not automatically deduct cash** to represent a transfer from existing cash. Do not count a cash-to-gold conversion as fresh savings; use an appropriate offsetting cash entry and verify the wealth bridge.
-- This is a test build. Back up your ledger and test one gold entry before using with real data.
+**No one can responsibly guarantee “no mistakes” without your real transaction history, a working authenticated backend, and end-to-end device tests.**
