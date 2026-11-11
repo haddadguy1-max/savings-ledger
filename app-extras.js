@@ -415,7 +415,7 @@ $('x-data').insertAdjacentHTML('beforebegin',`<div class="section" id="x-sync"><
  <label class="x-label" for="x-sync-url">Ledger login</label><input id="x-sync-url" class="x-input" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Your ledger login">
  <label class="x-label" for="x-sync-token">Password</label><input id="x-sync-token" type="password" class="x-input" autocomplete="current-password" autocapitalize="off">
  <div class="x-btns"><button type="button" id="x-sync-connect">Sign in</button><button type="button" id="x-sync-invite">Invite someone</button><button type="button" id="x-sync-now">Sync now</button><button type="button" id="x-sync-off" class="danger">Sign out</button></div></div></div>`);
-$('x-sync').querySelector('.kpi-card').insertAdjacentHTML('afterbegin',`<div style="margin-bottom:16px"><button type="button" id="x-google-login" class="x-primary" style="width:100%">Sign up / Sign in with Google · My Drive</button><p class="x-note" id="x-google-info">Your own Google Sheet is created automatically. No Apps Script required. On iPhone, sign in through Safari if the home-screen app blocks Google login.</p></div>`);
+$('x-sync').querySelector('.kpi-card').insertAdjacentHTML('afterbegin',`<div style="margin-bottom:16px"><button type="button" id="x-google-login" class="x-primary" style="width:100%">Sign up with Google · My Drive</button><p class="x-note" id="x-google-info">Your own Google Sheet is created automatically. No Apps Script required. On iPhone, sign in through Safari if the home-screen app blocks Google login.</p></div>`);
 $('x-google-login').onclick=async()=>{
   try{
     if(!window.LGGoogle)throw Error('Google integration not loaded');
@@ -424,7 +424,7 @@ $('x-google-login').onclick=async()=>{
     // Keep legacy data intact. Google accounts have isolated local snapshots.
     const oldId=localStorage.getItem('lg-google-sheet-id');
     const currentId=result.spreadsheetId;
-    const keys=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-gold-history-v1'];
+    const keys=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-gold-history-v1','lg-delivery-v1'];
     if(oldId!==currentId){
       const legacy=localStorage.getItem('lg-google-legacy-snapshot-v1');
       if(!legacy){
@@ -518,7 +518,7 @@ $('x-sync-invite').onclick=async()=>{
 $('x-sync-now').onclick=()=>{if(!cfg()){toast('Sign in first.');return;}sync({manual:true});};
 $('x-sync-off').onclick=()=>{
   if(window.LGGoogle?.active()){
-    const id=LGGoogle.spreadsheetId,keys=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-gold-history-v1'];
+    const id=LGGoogle.spreadsheetId,keys=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-gold-history-v1','lg-delivery-v1'];
     const snap={};keys.forEach(k=>snap[k]=localStorage.getItem(k));
     localStorage.setItem('lg-google-account-'+id,JSON.stringify(snap));
     const legacy=JSON.parse(localStorage.getItem('lg-google-legacy-snapshot-v1')||'{}');
@@ -833,6 +833,7 @@ setInterval(()=>{if(!document.hidden)fetchGoldHistory().then(ok=>{if(ok&&!busy()
    Each shared setting carries its own "last changed" time; the newest one wins on every phone. */
 const SHU='lg-shu-v1',SHS='lg-shs-v1';
 const SH={
+  fullDataConfig:{get:()=>{const o={...CFG};delete o.emails;return o;},set:v=>{if(v&&typeof v==='object'){const keep=CFG.emails;CFG={...CFG,...v};if(keep)CFG.emails=keep;}}},
   people:{get:()=>(CFG.people&&CFG.people.length?CFG.people:null),set:v=>{CFG.people=Array.isArray(v)?v:[];}},
   title:{get:()=>CFG.title||null,set:v=>{CFG.title=v||'';}},
   goal:{get:()=>(CFG.goal>0?+CFG.goal:null),set:v=>{CFG.goal=+v||0;}},
@@ -841,7 +842,6 @@ const SH={
   goldMode:{get:()=>gset().mode,set:v=>{gsave({mode:v==='cost'?'cost':'market'});}},
   goldManual:{get:()=>gset().manual||null,set:v=>{gsave({manual:v||''});}},
   goldMan:{get:()=>{const m=hget().man;return m&&Object.keys(m).length?m:null;},set:v=>{hsave({man:v||{}});}},
-  reportEmails:{get:()=>(CFG.emails&&CFG.emails.length?CFG.emails:null),set:v=>{CFG.emails=Array.isArray(v)?v:[];}},
   delivery:{get:()=>deliveryPrefs(),set:v=>{if(v&&typeof v==='object'){localStorage.setItem('lg-delivery-v1',JSON.stringify(v));drawDelivery();}}},
   appUrl:{get:()=>location.origin+location.pathname,set:()=>{}}
 };
@@ -859,7 +859,7 @@ function shMerge(reply){
   if(!reply||typeof reply.settings!=='object'||!reply.settings){shared.ok=false;return null;}
   shared.ok=true;shared.backupAt=+reply.backupAt||0;
   // On first Google connection, remote settings must win over device defaults.
-  if(!(window.LGGoogle?.active() && !Object.keys(jget(SHU)).length))shStamp();
+  if(Object.keys(jget(SHU)).length)shStamp();
   const u=jget(SHU),s=jget(SHS),R=reply.settings,out={};let applied=false;
   Object.keys(SH).forEach(k=>{
     const r=R[k],lu=+u[k]||0,ru=r?(+r.u||0):0;
@@ -868,6 +868,8 @@ function shMerge(reply){
     else if(lu>ru&&r)out[k]={v:'',u:lu};
   });
   if(applied){try{localStorage.setItem(CFGKEY,JSON.stringify(CFG));}catch(e){}jset(SHU,u);jset(SHS,s);_ppl=null;shared.applied=true;}
+  // After adopting remote values, stamp any genuinely missing local keys for first sync.
+  if(!Object.keys(jget(SHU)).length || applied)shStamp();
   return Object.keys(out).length?out:null;
 }
 const shared={ok:null,backupAt:0,applied:false};
@@ -1581,9 +1583,6 @@ $('x-sync').insertAdjacentHTML('afterend',`<div class="section" id="x-settings">
  <label class="x-label" for="x-start-in">Real saving in your first month<span id="x-start-m"></span> (optional)</label>
  <input id="x-start-in" class="x-input" inputmode="decimal" autocomplete="off" placeholder="Leave empty if it was a normal month">
  <p class="x-note">If your first month also holds savings you already had, type what you really saved that month. Year-over-year, averages and best-month figures then use it, so later years are compared fairly.</p>
- <label class="x-label" for="x-mail-in">Monthly report email (optional)</label>
- <input id="x-mail-in" class="x-input" type="text" inputmode="email" autocomplete="off" autocapitalize="off" placeholder="you@example.com, partner@example.com">
- <p class="x-note" id="x-mail-note">Save recipients here. Automatic delivery and test sending require an email service; entering an address alone does not send mail.</p>
 </div></div>`);
 const st4=document.createElement('style');
 st4.textContent=`.x-ppl{display:flex;flex-wrap:wrap;gap:8px}
@@ -1601,7 +1600,6 @@ function renderSettings(){
   if(a!=='x-title-in')$('x-title-in').value=CFG.title||'';
   if(a!=='x-goal-in')$('x-goal-in').value=CFG.goal>0?String(CFG.goal):'';
   if(a!=='x-start-in')$('x-start-in').value=startSaving()==null?'':String(startSaving());
-  if(a!=='x-mail-in')$('x-mail-in').value=(CFG.emails||[]).join(', ');
   const fmk=firstMonth();$('x-start-m').textContent=fmk?`, ${fk(fmk)}`:'';
   $('x-set-hint').textContent=cfg()?(shared.ok===false?'not shared yet: update the ledger script':(shared.ok?'shared with everyone signed in':'')):'saved on this phone';
 }
@@ -1623,36 +1621,20 @@ $('x-ppl').addEventListener('click',e=>{
   if(n){snapshot();allData.forEach(r=>{if(ownerKey(r.name)===ownerKey(old))r.name=nn.toLowerCase()+(isLoanName(r.name)?' - loan':'');});}
   P[i]=nn;saveCfg({people:P});if(n){save();status();}cfgChanged();toast(`Renamed to ${nn}${n?` in ${n} entr${n>1?'ies':'y'}`:''}`,!!n);
 });
-$('x-mail-in').onchange=e=>{
-  const list=e.target.value.split(/[,;\s]+/).map(x=>x.trim()).filter(Boolean),bad=list.filter(x=>!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x));
-  if(bad.length){toast(`Check this address: ${bad[0]}`);return;}
-  saveCfg({emails:list.slice(0,6)});cfgChanged();
-  toast(!list.length?'Monthly email turned off':(cfg()?(shared.ok===false?'Saved. Update the ledger script to start the emails.':'Email saved. Automatic delivery requires a configured email service.'):'Saved. Sign in to start the emails.'),false);
-};
 /* Account delivery preferences: stored in the same settings object and synced by the ledger settings adapter. */
 $('x-settings').insertAdjacentHTML('beforeend', `<div class="x-set" id="x-delivery" style="margin-top:16px;border-top:1px solid var(--line);padding-top:16px">
- <h3 style="font-family:Newsreader,serif;font-size:22px;margin:0 0 8px">Reports & notifications</h3>
- <p class="x-note">Email requires the upgraded Apps Script for legacy ledgers. Scheduled remote push requires a push server. Test notification checks this device only.</p>
- <label class="x-label"><input type="checkbox" id="x-mail-enabled"> Monthly email report enabled</label>
- <div class="x-btns"><button type="button" id="x-email-test">Send test email now</button><button type="button" id="x-email-check">Check email setup</button></div>
- <p id="x-email-result" class="x-note" role="status"></p>
+ <h3 style="font-family:Newsreader,serif;font-size:22px;margin:0 0 8px">Notifications</h3>
+ <p class="x-note">Notifications are enabled by default in preferences. Allow permission to test on this device. Scheduled push when the app is closed still needs a push server.</p>
  <label class="x-label"><input type="checkbox" id="x-push-enabled"> Monthly push notification enabled</label>
  <label class="x-label" for="x-push-hour">Preferred notification hour (local)</label>
  <select class="x-input" id="x-push-hour"><option value="8">08:00</option><option value="9">09:00</option><option value="10">10:00</option><option value="12">12:00</option><option value="18">18:00</option></select>
  <div class="x-btns"><button type="button" id="x-push-test">Test notification on this device</button></div>
  <p id="x-push-result" class="x-note" role="status"></p>
  </div>`);
-function deliveryPrefs(){try{return JSON.parse(localStorage.getItem('lg-delivery-v1')||'{}');}catch{return {};}}
+function deliveryPrefs(){try{return {push:true,hour:9,...JSON.parse(localStorage.getItem('lg-delivery-v1')||'{}')};}catch{return {push:true,hour:9};}}
 function saveDelivery(p){const n={...deliveryPrefs(),...p};localStorage.setItem('lg-delivery-v1',JSON.stringify(n));if(window.lgCfgChanged)window.lgCfgChanged();}
-function drawDelivery(){const p=deliveryPrefs();$('x-mail-enabled').checked=!!p.email;$('x-push-enabled').checked=!!p.push;$('x-push-hour').value=String(p.hour||9);}
-['x-mail-enabled','x-push-enabled','x-push-hour'].forEach(id=>$(id).addEventListener('change',()=>{saveDelivery({email:$('x-mail-enabled').checked,push:$('x-push-enabled').checked,hour:+$('x-push-hour').value});toast('Preferences saved on this device. Remote delivery requires server configuration.',false);}));
-$('x-email-check').onclick=()=>{$('x-email-result').textContent=cfg()?.mode==='google'?'Google account connected. A dedicated email delivery backend is not yet configured.':cfg()?'Legacy ledger connected. Upgrade its Apps Script to enable real email sending.':'Sign in to your ledger before sending email.';};
-$('x-email-test').onclick=async()=>{
- const el=$('x-email-result');const recipients=(CFG.emails||[]);if(!recipients.length){el.textContent='Add a recipient email above, then try again.';return;}
- if(!cfg()){el.textContent='Sign in before sending a test email.';return;}
- if(cfg().mode==='google'){el.textContent='Not sent: Google Sheets alone cannot send email. Configure a secure email backend first.';return;}
- el.textContent='Requesting real email delivery…';try{const r=await api('POST',{action:'testEmail',emails:recipients});el.textContent=r.emailSent?'Email send accepted by Apps Script. Check your inbox and spam folder.':'Not sent: '+(r.emailError||'The deployed Apps Script does not support test emails. Deploy the included Code.gs.');}catch(e){el.textContent='Not sent: '+errText(e);}
-};
+function drawDelivery(){const p=deliveryPrefs();$('x-push-enabled').checked=!!p.push;$('x-push-hour').value=String(p.hour||9);}
+['x-push-enabled','x-push-hour'].forEach(id=>$(id).addEventListener('change',()=>{saveDelivery({push:$('x-push-enabled').checked,hour:+$('x-push-hour').value});toast('Notification preference saved. Scheduled push needs server activation.',false);}));
 $('x-push-test').onclick=async()=>{
  const el=$('x-push-result');if(!('Notification' in window)||!('serviceWorker' in navigator)){el.textContent='Notifications are not supported in this browser.';return;}
  if(/iPhone|iPad|iPod/.test(navigator.userAgent)&&!window.navigator.standalone){el.textContent='On iPhone, first add this site to your Home Screen and open it from there.';return;}
@@ -1813,7 +1795,7 @@ function reportData(k){
 }
 
 /* ----- on screen ----- */
-document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-pdf">Export PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
+document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-view">Detailed view</button><button type="button" id="rp-pdf">Export PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
 const st5=document.createElement('style');
 st5.textContent=`#rp{position:fixed;inset:0;z-index:600;background:var(--bg);overflow-y:auto;-webkit-overflow-scrolling:touch}
 .rp-bar{position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:var(--card);border-bottom:1px solid var(--line)}
@@ -1838,14 +1820,19 @@ st5.textContent=`#rp{position:fixed;inset:0;z-index:600;background:var(--bg);ove
 .x-repcard div{min-width:0}.x-repcard b{display:block;font-size:14px}.x-repcard span{display:block;font-size:12px;color:var(--muted);margin-top:1px}
 .x-repcard button{flex:0 0 auto;font:600 13px "IBM Plex Sans",sans-serif;padding:9px 16px;border-radius:999px;border:0;background:var(--ink);color:#fff;cursor:pointer}`;
 document.head.appendChild(st5);
-const RP={k:null,charts:[]};
+const RP={k:null,charts:[],pdfView:true,pdfUrl:null};
+$('rp-view').onclick=()=>{RP.pdfView=!RP.pdfView;renderReport();};
 const cellH=c=>typeof c==='string'?esc(c):`<span class="${c.tone||''}">${esc(c.t)}</span>`;
 function renderReport(){
   const ms=reportMonths();if(!ms.length)return;
   if(!ms.includes(RP.k))RP.k=lastClosedMonth()||ms[0];
   $('rp-sel').innerHTML=ms.map(k=>`<option value="${k}">${fk(k)}${k===nowKey()?' (so far)':''}</option>`).join('');$('rp-sel').value=RP.k;
   RP.charts.forEach(c=>{try{c.destroy();}catch(e){}});RP.charts=[];
-  const D=reportData(RP.k);let h=`<div class="rp-k">${esc(D.title)} · monthly report</div><div class="rp-h">${esc(D.label)}</div><div class="rp-s">${esc(D.sub)}</div>`;
+  const D=reportData(RP.k);
+  $('rp-view').textContent=RP.pdfView?'Detailed view':'PDF view';
+  if(RP.pdfUrl){URL.revokeObjectURL(RP.pdfUrl);RP.pdfUrl=null;}
+  if(RP.pdfView){try{RP.pdfUrl=URL.createObjectURL(new Blob([buildPdf(D)],{type:'application/pdf'}));$('rp-body').innerHTML='<iframe title="Monthly report PDF preview" src="'+RP.pdfUrl+'" style="width:100%;height:calc(100dvh - 125px);min-height:520px;border:0;background:white"></iframe>';return;}catch(e){console.warn('PDF preview unavailable; showing detailed report',e);RP.pdfView=false;}}
+  let h=`<div class="rp-k">${esc(D.title)} · monthly report</div><div class="rp-h">${esc(D.label)}</div><div class="rp-s">${esc(D.sub)}</div>`;
   const cfgs=[];
   D.sections.forEach(s=>{
     if(s.type==='tiles')h+=`<div class="rp-tiles">${s.tiles.map(x=>`<div class="rp-t"><span>${esc(x.l)}</span><b class="${/^[+−]/.test(x.v)?x.tone:''}">${esc(x.v)}</b><em class="${/^[+−]/.test(x.v)?'':x.tone}">${esc(x.s)}</em></div>`).join('')}</div>`;
@@ -1863,7 +1850,7 @@ function openReport(k){
   $('rp').hidden=false;document.body.style.overflow='hidden';renderReport();$('rp').scrollTop=0;
   const lc=lastClosedMonth();if(lc&&RP.k>=lc){try{localStorage.setItem('lg-report-seen',lc);}catch(e){}renderRepCard();}
 }
-function closeReport(){$('rp').hidden=true;document.body.style.overflow='';RP.charts.forEach(c=>{try{c.destroy();}catch(e){}});RP.charts=[];}
+function closeReport(){if(RP.pdfUrl){URL.revokeObjectURL(RP.pdfUrl);RP.pdfUrl=null;}$('rp').hidden=true;document.body.style.overflow='';RP.charts.forEach(c=>{try{c.destroy();}catch(e){}});RP.charts=[];}
 $('rp-close').onclick=closeReport;
 $('rp-sel').onchange=e=>{RP.k=e.target.value;renderReport();$('rp').scrollTop=0;};
 window.lgOpenReport=openReport;
