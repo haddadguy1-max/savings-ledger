@@ -416,29 +416,36 @@ $('x-data').insertAdjacentHTML('beforebegin',`<div class="section" id="x-sync"><
  <label class="x-label" for="x-sync-token">Password</label><input id="x-sync-token" type="password" class="x-input" autocomplete="current-password" autocapitalize="off">
  <div class="x-btns"><button type="button" id="x-sync-connect">Sign in</button><button type="button" id="x-sync-invite">Invite someone</button><button type="button" id="x-sync-now">Sync now</button><button type="button" id="x-sync-off" class="danger">Sign out</button></div></div></div>`);
 $('x-sync').querySelector('.kpi-card').insertAdjacentHTML('afterbegin',`<div style="margin-bottom:16px"><button type="button" id="x-google-login" class="x-primary" style="width:100%">Sign up with Google · My Drive</button><p class="x-note" id="x-google-info">Your own Google Sheet is created automatically. No Apps Script required. On iPhone, sign in through Safari if the home-screen app blocks Google login.</p></div>`);
+/* Account-specific local cache: never let another ledger inherit financial settings. */
+const ACCOUNT_KEYS=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-gold-history-v1','lg-delivery-v1','lg-xp-v1','lg-ledger-seeded'];
+const ACCOUNT_ACTIVE='lg-active-account-v2';
+const accountId=(kind,id)=>kind+':'+id;
+const accountSnapshot=()=>{const o={};ACCOUNT_KEYS.forEach(k=>o[k]=localStorage.getItem(k));return o;};
+const accountSave=()=>{const id=localStorage.getItem(ACCOUNT_ACTIVE);if(id)localStorage.setItem('lg-account-cache-v2:'+id,JSON.stringify(accountSnapshot()));};
+function accountSwitch(id){
+  const previous=localStorage.getItem(ACCOUNT_ACTIVE);
+  if(previous===id)return;
+  if(!previous && !localStorage.getItem('lg-account-cache-v2:original-device'))localStorage.setItem('lg-account-cache-v2:original-device',JSON.stringify(accountSnapshot()));
+  accountSave();
+  let snapshot={};try{snapshot=JSON.parse(localStorage.getItem('lg-account-cache-v2:'+id)||'{}')||{};}catch(e){}
+  ACCOUNT_KEYS.forEach(k=>snapshot[k]==null?localStorage.removeItem(k):localStorage.setItem(k,snapshot[k]));
+  localStorage.setItem(ACCOUNT_ACTIVE,id);
+  CFG=JSON.parse(localStorage.getItem(CFGKEY)||'{}');_ppl=null;
+  allData=loadSaved();try{tomb=JSON.parse(localStorage.getItem(TOMB)||'{}')||{};}catch(e){tomb={};}
+  lastSig={};allData.forEach(r=>lastSig[r.id]=sig(r));ver++;
+  renderAll();
+}
+/* Do not treat default preferences on a new phone as edits before remote settings arrive. */
+window.addEventListener('pagehide',accountSave);
+setInterval(accountSave,12000);
 $('x-google-login').onclick=async()=>{
   try{
     if(!window.LGGoogle)throw Error('Google integration not loaded');
     // Google OAuth must be initiated directly from the user gesture.
     const result=await LGGoogle.login();
-    // Keep legacy data intact. Google accounts have isolated local snapshots.
-    const oldId=localStorage.getItem('lg-google-sheet-id');
-    const currentId=result.spreadsheetId;
-    const keys=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-gold-history-v1','lg-delivery-v1'];
-    if(oldId!==currentId){
-      const legacy=localStorage.getItem('lg-google-legacy-snapshot-v1');
-      if(!legacy){
-        const snapshot={};keys.forEach(k=>snapshot[k]=localStorage.getItem(k));
-        localStorage.setItem('lg-google-legacy-snapshot-v1',JSON.stringify(snapshot));
-      }
-      const saved=JSON.parse(localStorage.getItem('lg-google-account-'+currentId)||'{}');
-      keys.forEach(k=>saved[k]==null?localStorage.removeItem(k):localStorage.setItem(k,saved[k]));
-      localStorage.setItem('lg-google-sheet-id',currentId);
-      CFG=JSON.parse(localStorage.getItem('lg-cfg-v1')||'{}');_ppl=null;
-      allData=loadSaved();tomb=JSON.parse(localStorage.getItem(TOMB)||'{}');
-      lastSig={};allData.forEach(r=>lastSig[r.id]=sig(r));ver++;
-      if(!Object.keys(saved).length){localStorage.removeItem('lg-shu-v1');localStorage.removeItem('lg-shs-v1');}
-    }
+    // Switch only after Google has successfully identified its spreadsheet.
+    accountSwitch(accountId('google',result.spreadsheetId));
+    localStorage.setItem('lg-google-sheet-id',result.spreadsheetId);
     $('x-google-info').textContent='Connected: '+result.email+' · Google Sheet '+result.spreadsheetId;
     $('x-google-login').textContent='Google account · Reconnect';
     await sync({manual:true,adopt:true});
@@ -501,13 +508,18 @@ async function sync(o){
 $('x-sync-connect').onclick=async()=>{
   const url=toUrl($('x-sync-url').value),token=$('x-sync-token').value.trim();
   if(!url||!token){toast('Enter your ledger login and password.');return;}
+  // Authenticate BEFORE switching cached data, so a wrong password never changes the account.
+  const previous=localStorage.getItem(SYNC);
   localStorage.setItem(SYNC,JSON.stringify({url,token}));setSyncState('Connecting…');
-  let adopt=false;
-  try{
-    const remote=((await api('GET')).rows||[]).filter(x=>!isTrue(x.deleted));
-    if(remote.length&&allData.length)adopt=confirm(`This ledger already has ${remote.length} entries and this phone has ${allData.length}.\n\nOK: use the ledger's entries and replace this phone's.\nCancel: merge both (can create duplicates).`);
-  }catch(e){localStorage.removeItem(SYNC);setSyncState('');status();toast(errText(e));return;}
-  await sync({manual:true,adopt});
+  let reply;
+  try{reply=await api('GET');if(!Array.isArray(reply.rows))throw Error('Invalid ledger response');}
+  catch(e){previous==null?localStorage.removeItem(SYNC):localStorage.setItem(SYNC,previous);setSyncState('');status();toast(errText(e));return;}
+  const ledgerKey=accountId('legacy',url); // password is not stored in the cache key
+  accountSwitch(ledgerKey);
+  localStorage.setItem(SYNC,JSON.stringify({url,token}));
+  // Remote settings are authoritative on first connection to a ledger.
+  await sync({manual:true,adopt:true});
+  accountSave();
 };
 $('x-sync-invite').onclick=async()=>{
   const c=cfg();if(!c){toast('Sign in first.');return;}if(c.mode==='google'){toast('To share a Google ledger, use Google Drive sharing. Each collaborator needs Google access.');return;}
@@ -517,18 +529,12 @@ $('x-sync-invite').onclick=async()=>{
 };
 $('x-sync-now').onclick=()=>{if(!cfg()){toast('Sign in first.');return;}sync({manual:true});};
 $('x-sync-off').onclick=()=>{
-  if(window.LGGoogle?.active()){
-    const id=LGGoogle.spreadsheetId,keys=[KEY,TOMB,'lg-shu-v1','lg-shs-v1','lg-cfg-v1','lg-gold-v1','lg-gold-history-v1','lg-delivery-v1'];
-    const snap={};keys.forEach(k=>snap[k]=localStorage.getItem(k));
-    localStorage.setItem('lg-google-account-'+id,JSON.stringify(snap));
-    const legacy=JSON.parse(localStorage.getItem('lg-google-legacy-snapshot-v1')||'{}');
-    keys.forEach(k=>legacy[k]==null?localStorage.removeItem(k):localStorage.setItem(k,legacy[k]));
-    localStorage.removeItem('lg-google-sheet-id');LGGoogle.signout();
-    CFG=JSON.parse(localStorage.getItem('lg-cfg-v1')||'{}');_ppl=null;
-    allData=loadSaved();tomb=JSON.parse(localStorage.getItem(TOMB)||'{}');
-    lastSig={};allData.forEach(r=>lastSig[r.id]=sig(r));renderAll();
-  } else localStorage.removeItem(SYNC);
-  $('x-sync-token').value='';setSyncState('');status();toast('Signed out.');
+  accountSave();
+  if(window.LGGoogle?.active())LGGoogle.signout();
+  localStorage.removeItem('lg-google-sheet-id');
+  localStorage.removeItem(SYNC);
+  accountSwitch('signed-out');
+  $('x-sync-token').value='';$('x-sync-url').value='';setSyncState('');status();toast('Signed out. Ledger data is isolated.');
 };
 setInterval(()=>{if(cfg()&&!document.hidden)sync({quiet:true});},45000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cfg())sync({quiet:true});});
@@ -869,7 +875,7 @@ function shMerge(reply){
   });
   if(applied){try{localStorage.setItem(CFGKEY,JSON.stringify(CFG));}catch(e){}jset(SHU,u);jset(SHS,s);_ppl=null;shared.applied=true;}
   // After adopting remote values, stamp any genuinely missing local keys for first sync.
-  if(!Object.keys(jget(SHU)).length || applied)shStamp();
+  if(applied)shStamp();
   return Object.keys(out).length?out:null;
 }
 const shared={ok:null,backupAt:0,applied:false};
@@ -1795,7 +1801,7 @@ function reportData(k){
 }
 
 /* ----- on screen ----- */
-document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-view">Detailed view</button><button type="button" id="rp-pdf">Export PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
+document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-pdf">Export PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
 const st5=document.createElement('style');
 st5.textContent=`#rp{position:fixed;inset:0;z-index:600;background:var(--bg);overflow-y:auto;-webkit-overflow-scrolling:touch}
 .rp-bar{position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:var(--card);border-bottom:1px solid var(--line)}
@@ -1819,9 +1825,11 @@ st5.textContent=`#rp{position:fixed;inset:0;z-index:600;background:var(--bg);ove
 .x-repcard.new{border-color:var(--gold);background:#FBF6EA}
 .x-repcard div{min-width:0}.x-repcard b{display:block;font-size:14px}.x-repcard span{display:block;font-size:12px;color:var(--muted);margin-top:1px}
 .x-repcard button{flex:0 0 auto;font:600 13px "IBM Plex Sans",sans-serif;padding:9px 16px;border-radius:999px;border:0;background:var(--ink);color:#fff;cursor:pointer}`;
+const stResponsive=document.createElement('style');stResponsive.textContent='\n/* Native continuous report: no PDF iframe, page clipping, or horizontal viewport overflow. */\n#rp{width:100%;max-width:100vw;overscroll-behavior:contain}\n#rp .rp-bar{box-sizing:border-box;width:100%;flex-wrap:wrap;gap:8px;padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}\n#rp .rp-bar .month-select{min-width:100px;flex:1 1 110px;max-width:100%}\n#rp #rp-pdf{flex:0 0 auto;white-space:nowrap;font-size:12px;padding:0 12px}\n#rp .rp-body{box-sizing:border-box;width:100%;max-width:900px;padding:clamp(16px,4vw,32px) max(14px,env(safe-area-inset-left)) calc(55px + env(safe-area-inset-bottom));overflow-x:hidden}\n#rp .rp-h{font-size:clamp(27px,7vw,42px);overflow-wrap:anywhere}\n#rp .rp-t{min-width:0;overflow:hidden}\n#rp .rp-t b{font-size:clamp(16px,4.7vw,23px);overflow-wrap:anywhere}\n#rp .rp-t em{overflow-wrap:anywhere}\n#rp .rp-ch{min-width:0;overflow:hidden;padding:clamp(10px,3vw,18px);border-radius:18px}\n#rp .rp-ch>div{height:clamp(220px,60vw,320px);min-width:0}\n#rp .rp-ch canvas{max-width:100%!important}\n#rp .table-container{width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:14px}\n#rp .rp-ins{border-radius:18px}\n#rp .rp-h2{font-size:clamp(19px,5vw,24px);margin-top:28px}\n@media(max-width:380px){#rp .rp-tiles{grid-template-columns:1fr 1fr;gap:7px}#rp .rp-t{padding:10px}#rp .rp-bar{gap:6px}}\n';document.head.appendChild(stResponsive);
 document.head.appendChild(st5);
-const RP={k:null,charts:[],pdfView:true,pdfUrl:null};
-$('rp-view').onclick=()=>{RP.pdfView=!RP.pdfView;renderReport();};
+const RP={k:null,charts:[],pdfUrl:null};
+// Responsive HTML is the primary report view; PDF remains a separate export.
+
 const cellH=c=>typeof c==='string'?esc(c):`<span class="${c.tone||''}">${esc(c.t)}</span>`;
 function renderReport(){
   const ms=reportMonths();if(!ms.length)return;
@@ -1829,9 +1837,7 @@ function renderReport(){
   $('rp-sel').innerHTML=ms.map(k=>`<option value="${k}">${fk(k)}${k===nowKey()?' (so far)':''}</option>`).join('');$('rp-sel').value=RP.k;
   RP.charts.forEach(c=>{try{c.destroy();}catch(e){}});RP.charts=[];
   const D=reportData(RP.k);
-  $('rp-view').textContent=RP.pdfView?'Detailed view':'PDF view';
   if(RP.pdfUrl){URL.revokeObjectURL(RP.pdfUrl);RP.pdfUrl=null;}
-  if(RP.pdfView){try{RP.pdfUrl=URL.createObjectURL(new Blob([buildPdf(D)],{type:'application/pdf'}));$('rp-body').innerHTML='<iframe title="Monthly report PDF preview" src="'+RP.pdfUrl+'" style="width:100%;height:calc(100dvh - 125px);min-height:520px;border:0;background:white"></iframe>';return;}catch(e){console.warn('PDF preview unavailable; showing detailed report',e);RP.pdfView=false;}}
   let h=`<div class="rp-k">${esc(D.title)} · monthly report</div><div class="rp-h">${esc(D.label)}</div><div class="rp-s">${esc(D.sub)}</div>`;
   const cfgs=[];
   D.sections.forEach(s=>{
@@ -2073,6 +2079,12 @@ try{
     history.replaceState(null,'',location.pathname+location.search);
   }
 }catch(e){}
+// Recover the selected ledger cache after a reload. Older unscoped installations
+// are left intact until the user explicitly connects to a ledger.
+try{const id=localStorage.getItem(ACCOUNT_ACTIVE);if(id){
+  const cached=JSON.parse(localStorage.getItem('lg-account-cache-v2:'+id)||'null');
+  if(cached){ACCOUNT_KEYS.forEach(k=>cached[k]==null?localStorage.removeItem(k):localStorage.setItem(k,cached[k]));CFG=JSON.parse(localStorage.getItem(CFGKEY)||'{}');_ppl=null;}
+}}catch(e){}
 allData=loadSaved();
 try{
   if(!localStorage.getItem(CFGKEY)&&allData.length){

@@ -1,21 +1,23 @@
-# Savings Ledger — Notifications + Complete Data Sync (test build)
+# Savings Ledger — account isolation test (v20)
+
+This is a **test build**, not a production security audit. It retains the original dashboard, legacy ledger login, Google OAuth prototype, reports and notification settings.
 
 ## What changed
-- Removed email recipients, email test, and email delivery controls. Bundled Apps Script no longer sends scheduled email. If an old Apps Script deployment already has an email trigger, **delete that trigger manually** in Apps Script → Triggers.
-- Notification settings are visible in Data and **enabled by default as a preference**. Permission is requested only when the user tests notifications. **This does not mean scheduled remote push is active**: that requires a deployed push service, subscription endpoint and scheduled job.
-- Settings synchronization now includes all properties in the Data configuration, plus gold preferences and notification preferences. Remote-first adoption is used when no local setting timestamps exist. **Unverified in live Google/Apps Script services.**
-- Report opens in a PDF preview generated from the exact same bytes as the Export PDF button; the Detailed view toggle shows the responsive report. Some iOS PWA browsers cannot embed PDF; use Detailed view or Export PDF there.
-- Legacy ledger ID/password login remains intact.
+- Ledger-specific local snapshots now include transactions, tombstones, all main Data configuration, gold preferences/history, contributor data, report settings, and notification preferences.
+- Switching Google accounts or legacy ledgers swaps the local cache instead of carrying another account's values across.
+- Legacy credentials are checked before switching accounts.
+- Sign out clears the active ledger view while retaining a separate recoverable local cache.
+- Google spreadsheet ID is the Google account ledger key.
+- A fresh account does not push default settings to an existing remote ledger during first sync.
+- Notification permission remains per-device; the monthly preference is ledger-specific.
 
-## Why Google sign-up still says not activated
-`google-drive.js` still contains `REPLACE_WITH_YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com`. A static GitHub Pages app cannot provision its own OAuth client. In Google Cloud Console enable Drive and Sheets APIs, configure the OAuth consent screen, create a Web application OAuth client, authorize `https://haddadguy1-max.github.io`, and replace the placeholder in `google-drive.js` with your public **Client ID**, not a client secret. Google may require test users and additional verification for broad deployment.
-
-## Protect your existing data
-1. Back up your existing repository and spreadsheet.
-2. Upload the extracted files to a **test** GitHub Pages repository, not production.
-3. Test existing ledger sign-in, changing goal/name/gold/notification settings on device A, sync, then open device B and verify each value. Repeat in reverse.
-4. Test the report PDF preview and exported PDF for the same month.
-5. If you use a previous deployed Apps Script with monthly email triggers, remove them manually; uploading a new `Code.gs` to GitHub does not update the deployed Apps Script.
-
-## Not yet operational
-Scheduled push when the PWA is closed, Google OAuth without owner configuration, and fully conflict-safe simultaneous multi-device edits. Notification permission must be granted on each device, and iOS requires Home Screen installation. Do not use this as your only copy of financial data.
+## Important limitations
+- **Do not deploy over your live website until tested.** Export your data and back up your repo.
+- Google OAuth still requires replacing the placeholder CLIENT_ID in google-drive.js and enabling Google APIs.
+- The browser's localStorage is **not encrypted**. A shared unlocked device can still expose locally cached financial information; account isolation prevents accidental cross-ledger mixing, not physical-device attacks.
+- Google tokens are held in memory and require reauthentication after reload.
+- Legacy login uses an existing script URL as ledger identifier. A separate legacy account migration mechanism is not included.
+- True scheduled push still requires a backend.
+- Google Sheets concurrent writes remain subject to races; do not edit on two devices simultaneously until hardened.
+- Test on two devices: account A target/name/gold/notifications, switch to B (all independent), switch back to A (all restored), then repeat on second device after sync.
+- This patch was syntax-checked, but **not live-tested against Google or Apps Script**.
