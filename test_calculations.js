@@ -20,7 +20,7 @@ const buy=[{name:'guy',type:'Gold 24k',gold:10,goldPrice:90,yyyyMM:'2026-08'}];
 let r;
 
 /* 1. full history: value is grams x that month's price, cost stays what was paid */
-setG({px:100,at:fixed-1000,via:'live'});setH({m:{'2026-08':88,'2026-09':90,'2026-10':95},meta:Object.fromEntries(['2026-08','2026-09','2026-10'].map(k=>[k,{method:'month-end-close',at:fixed-86400000}]))});
+setG({px:100,at:fixed-1000,via:'live'});setH({m:{'2026-08':88,'2026-09':90,'2026-10':95}});
 ctx.g=buy;r=run('goldMonthly(g)');
 assert.equal(r.length,4);near(r[1].value,900);near(r[1].cost,900);near(r[2].value,950);near(r[2].priceEffect,50);
 near(r[3].value,1000,'current month uses the latest price');assert.equal(r[3].src,'live');assert.equal(r.some(x=>x.est),false);
@@ -29,16 +29,14 @@ near(r[3].value,1000,'current month uses the latest price');assert.equal(r[3].sr
 ctx.g=[...buy,{name:'lea',type:'Gold 18k',gold:8,goldPrice:70,yyyyMM:'2026-10'}];r=run('goldMonthly(g)');
 near(r[3].units,16);near(r[3].value,1600);near(r[3].cost,1460);
 
-/* 3. a missing month uses the last earlier recorded observation, never future prices. */
+/* 3. a missing month between two known ones is spread between them, and flagged */
 setH({m:{'2026-08':88,'2026-10':96}});ctx.g=buy;r=run('goldMonthly(g)');
-near(r[1].px,88);assert.equal(r[1].est,true);assert.equal(r[1].src,'carried');
-assert.equal(r[0].est,true);assert.equal(r[2].est,true); // legacy cache lacks proof of dated closes
+near(r[1].px,92);assert.equal(r[1].est,true);assert.equal(r[0].est,false);assert.equal(r[2].est,false);
 
-/* 4. when only today's price exists, historic net worth stays at cost rather than
-   manufacturing past market quotes from what the person paid. */
+/* 4. no history at all, only today's price: every month still has a figure, estimates are flagged, nothing is blank */
 setH({});r=run('goldMonthly(g)');
-assert.equal(r.slice(0,3).every(x=>x.px===null&&x.src==='cost'&&x.value===900),true);
-assert.equal(r[3].px,100);near(r[3].value,1000);
+assert.equal(r.every(x=>x.px>0&&x.value>0),true);assert.equal(r[0].src,'paid');near(r[0].px,90);
+assert.equal(r[1].est&&r[2].est,true);near(r[3].px,100);near(r[1].px,90+10/3);
 
 /* 5. no price from anywhere: gold stays at what was paid, and says so */
 setG({});r=run('goldMonthly(g)');
@@ -52,14 +50,14 @@ near(r[1].px,93);assert.equal(r[1].src,'manual');
 setG({karat:21,manual:'105'});near(run('px24()'),120);
 
 /* 8. an old price is kept and shown as the last one received, never dropped */
-setG({px:100,at:fixed-3*86400000,via:'live'});near(run('px24()'),100);assert.equal(run('goldPriceFresh(gset())'),false);
+setG({px:100,at:fixed-3*86400000,via:'live'});near(run('px24()'),100);assert.equal(run('goldPriceFresh(gset())'),false);setG({px:100,at:fixed-10*60000,via:'live'});assert.equal(run('goldPriceFresh(gset())'),true);setG({px:100,at:fixed-3*86400000,via:'live'});
 setH({m:{'2026-08':88,'2026-09':90,'2026-10':95}});r=run('goldMonthly(g)');assert.equal(r[3].src,'cached');near(r[3].value,1000);
 
-/* 9. a verified market close from Sheets beats a legacy cached monthly average. */
-setH({m:{'2026-09':88},srv:{months:{'2026-09':95},meta:{'2026-09':{method:'month-end-close',at:Date.UTC(2026,8,30)}}}});
-near(run("observedMonthPx('2026-09').px"),95);
-assert.equal(run("observedMonthPx('2026-09').src"),'market');
-
-/* 10. the ledger's price is the second source */
-assert(source.includes("const sv=hget().srv,previous=gset();"));
-console.log('PASS: 10 gold price checks');
+/* 9. a month-end price from the ledger beats an old monthly average on the phone; a snapshot is a real price, not an estimate */
+setG({px:100,at:fixed-1000,via:'live'});setH({m:{'2026-09':90},srv:{months:{'2026-09':94},meta:{'2026-09':{method:'month-end-close',date:'2026-09-30'}}},snap:{'2026-10':{px:97,at:1}}});r=run('goldMonthly(g)');
+near(r[1].px,94);assert.equal(r[1].est,false);near(r[2].px,97);assert.equal(r[2].est,false);
+/* 10. after the last known price, months carry it forward and are marked */
+setG({});setH({m:{'2026-08':88}});r=run('goldMonthly(g)');near(r[3].px,88);assert.equal(r[3].est,true);assert.equal(r[3].src,'carried');
+/* 11. no month ever falls back to "paid" in the middle of priced months: value never jumps to cost and back */
+setG({px:100,at:fixed-1000,via:'live'});setH({m:{'2026-10':96}});r=run('goldMonthly(g)');assert.equal(r.every(x=>x.px>0),true);near(r[1].px,93);
+console.log('PASS: 11 gold price checks');

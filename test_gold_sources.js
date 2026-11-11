@@ -17,11 +17,12 @@ let nextHistory={metal:'XAU',points:[
  {t:'2026-03-31T21:00:00.000Z',price:350}, // invalid gold price
  {t:'bad-date',price:4100}
 ]};
+let freeHistory=[{date:'2026-08-28',price:3400,source:'x'},{date:'2026-08-31',price:3440,source:'x'},{date:'2026-10-29',price:4999,source:'x'}];
 const context={Date:mockDate,JSON,Number,Math,Object,console:{warn(){},log:console.log,error:console.error},Error,Promise,isFinite,
  OZ:31.1034768,toYMD:kdate,
  hget:()=>history,hsave:o=>Object.assign(history,o),
  cfg:()=>null,scheduleSync:()=>{},
- fetch:async (url)=>{urls.push(url);return {ok:true,json:async()=>nextHistory}},
+ fetch:async (url)=>{urls.push(url);if(url.includes('freegoldapi'))return {ok:true,json:async()=>freeHistory};return {ok:true,json:async()=>nextHistory}},
 };vm.createContext(context);
 vm.runInContext(between(source,'/* Daily closes, grouped by UTC calendar month.',"/* A month's price, per gram of 24k."),context);
 const run=s=>vm.runInContext(s,context);
@@ -34,17 +35,18 @@ assert.equal(run("goldRank({method:'month-end-close'})"),3);
 
 /* Google Apps Script must use the same provider conventions as the browser. */
 const backendResponses={
- 'gold-api':{symbol:'XAU',currency:'USD',price:4100,updatedAt:new Date(NOW-1000).toISOString()},
+ 'gold-api':{name:'Gold',price:4100,symbol:'XAU',updatedAt:new Date(NOW-1000).toISOString()},   // the real service sends no currency field
  'market/history':nextHistory
 };
 const backendContext={Date:mockDate,JSON,Number,Math,Object,String,Array,Error,isFinite,
- UrlFetchApp:{fetch:(u)=>({getResponseCode:()=>200,getContentText:()=>JSON.stringify(u.includes('gold-api')?backendResponses['gold-api']:u.includes('market/history')?backendResponses['market/history']:null)})},
+ UrlFetchApp:{fetch:(u)=>({getResponseCode:()=>200,getContentText:()=>JSON.stringify(u.includes('gold-api')?backendResponses['gold-api']:u.includes('market/history')?backendResponses['market/history']:u.includes('freegoldapi')?freeHistory:null)})},
  Utilities:{formatDate:(d,tz,format)=>d.toISOString().slice(0,7)}};
 vm.createContext(backendContext);
 vm.runInContext(between(backend,'function okPx_(p)','function gold_(){'),backendContext);
 const bhr=vm.runInContext('history_()',backendContext);
 assert.equal(bhr['2026-10'].px,4010);
 assert.equal(bhr['2026-10'].method,'month-end-close');
+assert.equal(bhr['2026-08'].px,3440,'a second source fills the month the first one lacks');assert.equal(bhr['2026-10'].src,'Standard Bullion, month-end close','and never overrides it');
 assert.equal(bhr['2026-11'],undefined,'backend must not write current month history as close');
 const bl=vm.runInContext('livePx_()',backendContext);
 assert.equal(bl.px,4100);assert.equal(bl.src,'Gold-API.com, spot');
@@ -56,15 +58,13 @@ assert.equal(bl.px,4100);assert.equal(bl.src,'Gold-API.com, spot');
  assert.equal(history.m['2020-02'],60,'old history not destroyed');
  assert(Math.abs(history.m['2026-09']-3550/31.1034768)<1e-8,'verified close replaces legacy average');
  assert.equal(history.meta['2026-10'].method,'month-end-close');
+ assert(Math.abs(history.m['2026-08']-3440/31.1034768)<1e-8,'second source fills a missing month with its last dated price');
+ assert(Math.abs(history.m['2026-10']-4010/31.1034768)<1e-8,'first source keeps its month');
  assert.equal(await run('fetchGoldHistory(false)'),false,'cached for 12 hours');
- nextHistory={error:'bad result'};
- assert.equal(await run('fetchGoldHistory(true)'),false,'invalid response rejected');
+ nextHistory={error:'bad result'};freeHistory={error:'bad'};
+ assert.equal(await run('fetchGoldHistory(true)'),false,'invalid responses rejected');
  assert.equal(history.meta['2026-10'].method,'month-end-close','failed refresh cannot erase saved history');
- /* Gold-API.com source response includes quote timestamp, not only a numeric price. */
- assert(source.includes("Date.parse(j.updatedAt||'')") && source.includes("j.symbol!=='XAU'") && source.includes("j.currency!=='USD'"));
- assert(backend.includes("standardbullion.com/api/v1/market/history?metal=XAU&range=5y"));
- assert(backend.includes("Date.parse(j&&j.updatedAt||'')"));
- assert(!backend.includes('freegoldapi.com/data/latest.json'));
- assert(!backend.includes('query1.finance.yahoo.com'));
- console.log('PASS: gold sources, dated month-end selection, old cache migration, failed refresh protection');
+ assert(!source.includes("j.currency!=='USD')throw"),'a quote without a currency field must be accepted');
+ assert(backend.includes('freegoldapi.com/data/latest.json')&&backend.includes('query1.finance.yahoo.com'),'three history sources on the ledger side');
+ console.log('PASS: gold sources, month-end selection, second source, old cache kept, failed refresh protection');
 })().catch(e=>{console.error(e);process.exitCode=1});

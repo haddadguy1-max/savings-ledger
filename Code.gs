@@ -1,4 +1,4 @@
-/*  Savings Ledger: Google Sheets backend (version 5).
+/*  Savings Ledger: Google Sheets backend (version 6).
 
     FIRST TIME
     1. Change TOKEN below to your own password (20+ characters is best). Never share it publicly.
@@ -16,7 +16,8 @@
     - keeps your settings (names, target, first-month saving, gold options, prices you typed) in the "Settings" tab
     - makes a weekly copy of your entries in a "Backup yyyy-mm-dd" tab, and keeps the last 8
     - fetches the gold price and its monthly history into the "Gold prices" tab, as a second source for the app
-    - sends push notifications to the phones that allowed them, even when the app is closed ("Push" tab)
+    - sends push notifications to the phones that allowed them, even when the app is closed ("Push" tab).
+      The app shows the state of every step under Data > Notifications > Push status.
     It sends no email.  */
 const TOKEN = 'CHANGE-THIS-TO-A-LONG-RANDOM-SECRET';
 const TAB = 'Raw data';
@@ -24,9 +25,13 @@ const SET_TAB = 'Settings';
 const GOLD_TAB = 'Gold prices';
 const HEAD = ['ID','Timestamp','Saving Type','Amount (g)','Amount (EUR)','Amount (USD)','Name','Column 1','Gold Price','Updated','Deleted'];
 const PUSH_TAB = 'Push';
-const API = 5;
+const API = 6;
 
-function setup(){ tab_(); setTab_(); goldTab_(); pushTab_(); vapid_(); cleanTriggers_(); ensureTick_(); }
+function setup(){
+  tab_(); setTab_(); goldTab_(); pushTab_(); vapid_(); cleanTriggers_(); ensureTick_();
+  PropertiesService.getScriptProperties().setProperty('setupAt', String(Date.now()));
+  try { UrlFetchApp.fetch('https://api.gold-api.com/price/XAU', { muteHttpExceptions:true }); } catch (err) {}   // makes Google ask for the permission to reach the push services
+}
 
 function tab_(){
   const ss = SpreadsheetApp.getActive();
@@ -155,34 +160,53 @@ function fetchJson_(url){
   return JSON.parse(r.getContentText());
 }
 function livePx_(){
+  const now = Date.now(), fresh = function(at){ return isFinite(at) && at <= now + 300000 && at >= now - 7 * 86400000; };
   try {
-    const j=fetchJson_('https://api.gold-api.com/price/XAU');
-    const p=Number(j&&j.price),at=Date.parse(j&&j.updatedAt||'');
-    if(j&&j.symbol==='XAU'&&j.currency==='USD'&&okPx_(p)&&isFinite(at)&&at<=Date.now()+300000&&at>=Date.now()-7*86400000)
-      return { px:p, at:at, src:'Gold-API.com, spot' };
+    const j = fetchJson_('https://api.gold-api.com/price/XAU'), p = Number(j && j.price);
+    let at = Date.parse(j && j.updatedAt || ''); if (!isFinite(at) || at > now + 300000) at = now;     // the service does not always send a time
+    if (j && okPx_(p) && (!j.symbol || j.symbol === 'XAU') && (!j.currency || j.currency === 'USD') && fresh(at)) return { px:p, at:at, src:'Gold-API.com, spot' };
   } catch (err) {}
-  /* A clearly attributed secondary spot quote, not a futures contract. */
   try {
-    const j=fetchJson_('https://standardbullion.com/spot-prices.json');
-    const x=j&&j.metals&&j.metals.filter(function(m){return m.symbol==='XAU';})[0];
-    const bid=Number(x&&x.bid),ask=Number(x&&x.ask),at=Date.parse(j&&j.updated||'');
-    if(okPx_(bid)&&okPx_(ask)&&ask>=bid&&isFinite(at)&&at<=Date.now()+300000&&at>=Date.now()-7*86400000)
-      return { px:(ask+bid)/2, at:at, src:'Standard Bullion, indicative bid/ask midpoint' };
+    const j = fetchJson_('https://standardbullion.com/spot-prices.json');
+    const x = j && j.metals && j.metals.filter(function(m){ return m.symbol === 'XAU'; })[0];
+    const bid = Number(x && x.bid), ask = Number(x && x.ask), at = Date.parse(j && j.updated || '');
+    if (okPx_(bid) && okPx_(ask) && ask >= bid && fresh(at)) return { px:(ask + bid) / 2, at:at, src:'Standard Bullion, indicative bid/ask midpoint' };
+  } catch (err) {}
+  try {
+    const j = fetchJson_('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?range=1d&interval=1d');
+    const p = Number(j.chart.result[0].meta.regularMarketPrice);
+    if (okPx_(p)) return { px:p, at:now, src:'Yahoo Finance, gold futures (GC=F)' };
   } catch (err) {}
   return null;
 }
 /* One last dated daily close per UTC calendar month, not a mean of prices or a gold purchase. */
 function history_(){
-  const out={};
+  const out = {}, cur = Utilities.formatDate(new Date(), 'GMT', 'yyyy-MM'), now = Date.now();
+  const keep = function(k, ts, p, src, date){
+    if (!isFinite(ts) || ts > now || !okPx_(p) || k >= cur || k < '2011-01') return;
+    if (!out[k] || (out[k].src === src && ts > out[k].at)) out[k] = { px:p, src:src, at:ts, date:date, method:'month-end-close' };
+  };
+  /* three sources, in order of preference; a later source only fills months the earlier ones do not have */
   try {
-    const j=fetchJson_('https://standardbullion.com/api/v1/market/history?metal=XAU&range=5y');
-    if(!j||j.metal!=='XAU'||!Array.isArray(j.points))return out;
-    const cur=Utilities.formatDate(new Date(),'GMT','yyyy-MM');
-    j.points.forEach(function(x){
-      const ts=Date.parse(String(x.t||'')),p=Number(x.price),k=String(x.t||'').slice(0,7);
-      if(!isFinite(ts)||ts>Date.now()||!okPx_(p)||k>=cur||k<'2011-01')return;
-      if(!out[k]||ts>out[k].at)out[k]={ px:p,src:'Standard Bullion, month-end close', at:ts, date:String(x.t).slice(0,10), method:'month-end-close' };
+    const j = fetchJson_('https://standardbullion.com/api/v1/market/history?metal=XAU&range=5y');
+    if (j && j.metal === 'XAU' && Array.isArray(j.points)) j.points.forEach(function(x){
+      const t = String(x.t || ''); keep(t.slice(0, 7), Date.parse(t), Number(x.price), 'Standard Bullion, month-end close', t.slice(0, 10));
     });
+  } catch (err) {}
+  try {
+    const arr = fetchJson_('https://freegoldapi.com/data/latest.json');
+    if (Array.isArray(arr)) arr.forEach(function(x){
+      const t = String(x.date || ''); if (!/^\d{4}-\d{2}-\d{2}/.test(t)) return;
+      keep(t.slice(0, 7), Date.parse(t.slice(0, 10)), Number(x.price), 'freegoldapi.com, month-end close', t.slice(0, 10));
+    });
+  } catch (err) {}
+  try {
+    const j = fetchJson_('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?range=5y&interval=1mo');
+    const r = j.chart.result[0], ts = r.timestamp, cl = r.indicators.quote[0].close;
+    for (let i = 0; i < ts.length; i++){
+      const d = new Date(ts[i] * 1000), k = Utilities.formatDate(d, 'GMT', 'yyyy-MM');
+      keep(k, ts[i] * 1000, Number(cl[i]), 'Yahoo Finance (GC=F), month-end close', Utilities.formatDate(d, 'GMT', 'yyyy-MM-dd'));
+    }
   } catch (err) {}
   return out;
 }
@@ -240,8 +264,8 @@ function monthly_(){ cleanTriggers_(); }
 /* ---------- web app ---------- */
 function extras_(){
   const o = { api:API, settings:{}, gold:null, backupAt:0, push:null };
-  try { o.push = { key:vapid_().pub }; } catch (err) {}
   try { ensureTick_(); } catch (err) {}
+  try { o.push = pushStatus_(); } catch (err) {}
   try { o.settings = settings_(); } catch (err) {}
   try { o.gold = gold_(); } catch (err) {}
   try { o.backupAt = backup_(); } catch (err) {}
@@ -271,11 +295,12 @@ function doPost(e){
     if (body.settings) saveSettings_(body.settings);
     try { if (body.push) pushed = registerPush_(body.push); } catch (err) {}
     try { if (fresh.length && fresh.length <= 12) partnerNotes_(fresh, String(body.dev || '')); } catch (err) {}
-    try { if (body.pushTest) test = testNote_(String(body.dev || '')); } catch (err) { test = String(err); }
+    try { if (body.pushTest) test = body.pushTest === 'later' ? testLater_(String(body.dev || '')) : testNote_(String(body.dev || '')); } catch (err) { test = 'error: ' + String(err).slice(0, 160); }
   }
   finally { lock.releaseLock(); }
   try { flushPush_(); } catch (err) {}
-  return out_({ ok:true, api:API, rows:(body.rows || []).length, settings:body.settings ? Object.keys(body.settings).length : 0, push:pushed, test:test });
+  let last = ''; try { last = PropertiesService.getScriptProperties().getProperty('pushLast') || ''; } catch (err) {}
+  return out_({ ok:true, api:API, rows:(body.rows || []).length, settings:body.settings ? Object.keys(body.settings).length : 0, push:pushed, test:test, last:last });
 }
 
 /* ====================================================================================================
@@ -379,6 +404,38 @@ function partnerNotes_(fresh, fromDev){
   list.forEach(function(d){ enqueue_(d, note); });
   commit_(list);
 }
+/* what the app shows under "Push status": every link of the chain, so a break is visible without opening this editor */
+function pushStatus_(){
+  const props = PropertiesService.getScriptProperties();
+  let timer = null; try { timer = ScriptApp.getProjectTriggers().some(function(t){ return t.getHandlerFunction() === 'pushTick'; }); } catch (err) {}
+  let n = 0; try { n = devices_().filter(function(d){ return d.endpoint; }).length; } catch (err) {}
+  return { key:vapid_().pub, devices:n, timer:timer, tickAt:Number(props.getProperty('tickAt')) || 0, setupAt:Number(props.getProperty('setupAt')) || 0,
+           last:props.getProperty('pushLast') || '', tz:Session.getScriptTimeZone() };
+}
+/* a test that arrives about a minute later, sent by a timer: proof that nothing on the phone needs to be open */
+function testLater_(dev){
+  const d = devices_().filter(function(x){ return x.dev === dev; })[0];
+  if (!d || !d.endpoint) return 'not registered';
+  const props = PropertiesService.getScriptProperties(), list = j_(props.getProperty('pushLater'), []);
+  if (list.indexOf(dev) < 0) list.push(dev);
+  props.setProperty('pushLater', JSON.stringify(list));
+  ScriptApp.getProjectTriggers().forEach(function(t){ if (t.getHandlerFunction() === 'pushLater') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('pushLater').timeBased().after(45 * 1000).create();
+  return 'later';
+}
+function pushLater(){
+  const lock = LockService.getScriptLock(); lock.waitLock(20000);
+  try {
+    const props = PropertiesService.getScriptProperties(), want = j_(props.getProperty('pushLater'), []);
+    props.setProperty('pushLater', '[]');
+    const list = devices_().filter(function(d){ return want.indexOf(d.dev) >= 0 && d.endpoint; });
+    list.forEach(function(d){ enqueue_(d, { title:'Delayed test arrived', body:'Sent by your ledger\'s timer, on its own. Scheduled alerts reach this phone the same way.', url:'./', tag:'test-later' }); });
+    commit_(list);
+  }
+  finally { lock.releaseLock(); }
+  flushPush_();
+  try { ScriptApp.getProjectTriggers().forEach(function(t){ if (t.getHandlerFunction() === 'pushLater') ScriptApp.deleteTrigger(t); }); } catch (err) {}
+}
 function testNote_(dev){
   const list = devices_().filter(function(d){ return d.dev === dev; });
   if (!list.length || !list[0].endpoint) return 'not registered';
@@ -386,8 +443,10 @@ function testNote_(dev){
   commit_(list);
   return 'sent';
 }
-/* runs every hour: the dated alerts, and gold moves */
-function pushTick_(){
+/* runs every hour: the dated alerts, the weekly summary, and gold moves */
+function pushTick_(){ pushTick(); }
+function pushTick(){
+  try { PropertiesService.getScriptProperties().setProperty('tickAt', String(Date.now())); } catch (err) {}
   const lock = LockService.getScriptLock(); lock.waitLock(20000);
   try {
     const list = devices_().filter(function(d){ return d.endpoint && d.prefs.push !== false; });
@@ -405,10 +464,24 @@ function pushTick_(){
       if (k === cur && !isLoan_(r) && amount_(r) > 0) savedCur = true;
     });
     if (first === prev){ const st = setting_(all, 'startSaving'); if (st != null && st !== '' && !isNaN(Number(st))) savedPrev = Number(st); }
+    const today = Utilities.formatDate(now, tz, 'yyyy-MM-dd'), weekAgo = Utilities.formatDate(new Date(now.getTime() - 7 * 86400000), tz, 'yyyy-MM-dd');
+    const weekday = Number(Utilities.formatDate(now, tz, 'u'));                       // 1 is Monday
+    let savedWeek = 0, savedMonth = 0;
+    rows.forEach(function(r){
+      const m = String(r.date || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (!m) return;
+      const dk = m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+      if (dk >= weekAgo && dk < today) savedWeek += amount_(r);
+      if (dk.slice(0, 7) === cur) savedMonth += amount_(r);
+    });
     const monthName = MONTHS_[+prev.slice(5) - 1], curName = MONTHS_[+cur.slice(5) - 1];
     list.forEach(function(d){
       const at = Number(d.prefs.hour) || 9;
       if (hour < at) return;
+      if (wants_(d, 'weekly') && weekday === 1 && rows.length && d.state.week !== today){
+        enqueue_(d, { title:Math.abs(savedWeek) > 0.5 ? 'Last week: ' + (savedWeek < 0 ? '-' : '+') + money_(Math.abs(savedWeek)) : 'Last week: nothing added',
+                      body:money_(savedMonth) + ' saved so far in ' + curName + '. Tap to open your ledger.', url:'./', tag:'week-' + today });
+        d.state.week = today;
+      }
       if (wants_(d, 'report') && day <= 7 && first && first <= prev && d.state.report !== prev){
         enqueue_(d, { title:'Your ' + monthName + ' report is ready', body:'You saved ' + money_(savedPrev) + ' in ' + monthName + '. Tap for net worth, goal and gold.', url:'./#report=' + prev, tag:'report-' + prev });
         d.state.report = prev;
@@ -454,8 +527,9 @@ function pushTick_(){
   flushPush_();
 }
 function ensureTick_(){
-  const has = ScriptApp.getProjectTriggers().some(function(t){ return t.getHandlerFunction() === 'pushTick_'; });
-  if (!has) ScriptApp.newTrigger('pushTick_').timeBased().everyHours(1).create();
+  const all = ScriptApp.getProjectTriggers();
+  all.forEach(function(t){ if (t.getHandlerFunction() === 'pushTick_') ScriptApp.deleteTrigger(t); });      // older versions used a name Google may not run
+  if (!all.some(function(t){ return t.getHandlerFunction() === 'pushTick'; })) ScriptApp.newTrigger('pushTick').timeBased().everyHours(1).create();
 }
 
 /* ----- the knock: an empty Web Push with a VAPID permission slip ----- */
@@ -465,13 +539,20 @@ function sendPush_(endpoint){
     const v = vapid_(), props = PropertiesService.getScriptProperties();
     const app = props.getProperty('appUrl') || '';
     const sub = /^https:\/\//.test(app) ? app : 'mailto:' + (Session.getEffectiveUser().getEmail() || 'owner@example.com');
-    const head = b64u_(JSON.stringify({ typ:'JWT', alg:'ES256' }));
-    const body = b64u_(JSON.stringify({ aud:m[1], exp:Math.floor(Date.now() / 1000) + 12 * 3600, sub:sub }));
-    const sig = ecSign_(head + '.' + body, v.d);
+    /* Apple asks that the permission slip is not renewed more than once an hour: one is kept per push service for six */
+    const jk = 'jwt ' + m[1], saved = j_(props.getProperty(jk), null);
+    let jwt = saved && saved.sub === sub && saved.pub === v.pub && Date.now() - saved.at < 6 * 3600000 ? saved.t : '';
+    if (!jwt){
+      const head = b64u_(JSON.stringify({ typ:'JWT', alg:'ES256' }));
+      const body = b64u_(JSON.stringify({ aud:m[1], exp:Math.floor(Date.now() / 1000) + 12 * 3600, sub:sub }));
+      jwt = head + '.' + body + '.' + ecSign_(head + '.' + body, v.d);
+      props.setProperty(jk, JSON.stringify({ t:jwt, at:Date.now(), sub:sub, pub:v.pub }));
+    }
     const r = UrlFetchApp.fetch(endpoint, { method:'post', payload:'', muteHttpExceptions:true,
-      headers:{ Authorization:'vapid t=' + head + '.' + body + '.' + sig + ', k=' + v.pub, TTL:'86400', Urgency:'normal' } });
+      headers:{ Authorization:'vapid t=' + jwt + ', k=' + v.pub, TTL:'86400', Urgency:'high' } });
     const code = r.getResponseCode();
-    props.setProperty('pushLast', code + ' at ' + new Date().toISOString() + (code >= 300 ? ' ' + String(r.getContentText()).slice(0, 200) : ''));
+    props.setProperty('pushLast', code + ' at ' + new Date().toISOString() + ' ' + m[1].replace('https://', '') + (code >= 300 ? ' ' + String(r.getContentText()).slice(0, 200) : ''));
+    if (code === 403) props.deleteProperty(jk);
     return code;
   } catch (err) {
     try { PropertiesService.getScriptProperties().setProperty('pushLast', 'error ' + String(err).slice(0, 200)); } catch (e2) {}

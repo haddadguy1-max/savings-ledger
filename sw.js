@@ -1,7 +1,7 @@
 /* Savings Ledger service worker. Pages and scripts are always asked from the site first, so a new release shows
    on the next launch; the saved copy is only used when the phone is offline. */
-const V='lg-ledger-v29';
-const CORE=['./','index.html','app-extras.js?v=29','google-drive.js?v=29','manifest.json','version.json','icon-180.png','icon-192.png','icon-512.png'];
+const V='lg-ledger-v30';
+const CORE=['./','index.html','app-extras.js?v=30','google-drive.js?v=30','manifest.json','version.json','icon-180.png','icon-192.png','icon-512.png'];
 const CDN=[
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
   'https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2/dist/chartjs-plugin-datalabels.min.js',
@@ -66,5 +66,7 @@ self.addEventListener('push',e=>{
       await self.registration.showNotification(String(n.title||'Savings Ledger'),{body:String(n.body||''),icon:'icon-192.png',badge:'icon-192.png',tag:'lg-'+(n.tag||'push'),
         data:{url:new URL(n.url||'./',self.registration.scope).href}});
     }
+    /* a count on the app's icon, cleared when the app is opened */
+    try{if(self.navigator&&self.navigator.setAppBadge){const open=await self.registration.getNotifications();await self.navigator.setAppBadge(Math.max(1,open.length));}}catch(err){}
   })());
 });
