@@ -415,7 +415,7 @@ $('x-data').insertAdjacentHTML('beforebegin',`<div class="section" id="x-sync"><
  <label class="x-label" for="x-sync-url">Ledger login</label><input id="x-sync-url" class="x-input" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Your ledger login">
  <label class="x-label" for="x-sync-token">Password</label><input id="x-sync-token" type="password" class="x-input" autocomplete="current-password" autocapitalize="off">
  <div class="x-btns"><button type="button" id="x-sync-connect">Sign in</button><button type="button" id="x-sync-invite">Invite someone</button><button type="button" id="x-sync-now">Sync now</button><button type="button" id="x-sync-off" class="danger">Sign out</button></div></div></div>`);
-$('x-sync').querySelector('.kpi-card').insertAdjacentHTML('afterbegin',`<div style="margin-bottom:16px"><button type="button" id="x-google-login" class="x-primary" style="width:100%">Sign in with Google · My Drive</button><p class="x-note" id="x-google-info">Your own Google Sheet is created automatically. No Apps Script required. On iPhone, sign in through Safari if the home-screen app blocks Google login.</p></div>`);
+$('x-sync').querySelector('.kpi-card').insertAdjacentHTML('afterbegin',`<div style="margin-bottom:16px"><button type="button" id="x-google-login" class="x-primary" style="width:100%">Sign up / Sign in with Google · My Drive</button><p class="x-note" id="x-google-info">Your own Google Sheet is created automatically. No Apps Script required. On iPhone, sign in through Safari if the home-screen app blocks Google login.</p></div>`);
 $('x-google-login').onclick=async()=>{
   try{
     if(!window.LGGoogle)throw Error('Google integration not loaded');
@@ -440,7 +440,7 @@ $('x-google-login').onclick=async()=>{
       if(!Object.keys(saved).length){localStorage.removeItem('lg-shu-v1');localStorage.removeItem('lg-shs-v1');}
     }
     $('x-google-info').textContent='Connected: '+result.email+' · Google Sheet '+result.spreadsheetId;
-    $('x-google-login').textContent='Reconnect Google account';
+    $('x-google-login').textContent='Google account · Reconnect';
     await sync({manual:true,adopt:true});
   }catch(e){toast(e.message||'Google sign-in failed');}
 };
@@ -452,7 +452,7 @@ const isTrue=v=>v===true||v===1||String(v).toLowerCase()==='true';
 function setSyncState(t){syncState=t;const el=$('x-sync-status');if(el)el.textContent=t;status();}
 function scheduleSync(){if(!cfg())return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>sync({quiet:true}),1500);}
 function busy(){const a=document.activeElement;return !$('x-sheet').hidden||!!(a&&a.classList&&a.classList.contains('x-cell'));}
-function errText(e){return e.message==='unauthorized'?'Wrong password.':e.message==='bad-reply'?'Could not sign in. Check the ledger login.':'Offline. Changes are saved here and will sync later.';}
+function errText(e){const m=String(e?.message||'');if(m==='unauthorized')return 'Wrong password.';if(m==='bad-reply')return 'Could not sign in. Check the ledger login.';if(m==='offline'||!navigator.onLine)return 'Offline. Changes are saved here and will sync later.';return 'Sync failed: '+m.slice(0,160);}
 async function api(method,body){
   const c=cfg();if(c?.mode==='google')return method==='GET'?LGGoogle.get():LGGoogle.post(body||{});let r,j;
   try{
@@ -842,6 +842,7 @@ const SH={
   goldManual:{get:()=>gset().manual||null,set:v=>{gsave({manual:v||''});}},
   goldMan:{get:()=>{const m=hget().man;return m&&Object.keys(m).length?m:null;},set:v=>{hsave({man:v||{}});}},
   reportEmails:{get:()=>(CFG.emails&&CFG.emails.length?CFG.emails:null),set:v=>{CFG.emails=Array.isArray(v)?v:[];}},
+  delivery:{get:()=>deliveryPrefs(),set:v=>{if(v&&typeof v==='object'){localStorage.setItem('lg-delivery-v1',JSON.stringify(v));drawDelivery();}}},
   appUrl:{get:()=>location.origin+location.pathname,set:()=>{}}
 };
 const jget=k=>{try{return JSON.parse(localStorage.getItem(k)||'{}')||{};}catch(e){return {};}};
@@ -1628,6 +1629,38 @@ $('x-mail-in').onchange=e=>{
   saveCfg({emails:list.slice(0,6)});cfgChanged();
   toast(!list.length?'Monthly email turned off':(cfg()?(shared.ok===false?'Saved. Update the ledger script to start the emails.':'Email saved. Automatic delivery requires a configured email service.'):'Saved. Sign in to start the emails.'),false);
 };
+/* Account delivery preferences: stored in the same settings object and synced by the ledger settings adapter. */
+$('x-settings').insertAdjacentHTML('beforeend', `<div class="x-set" id="x-delivery" style="margin-top:16px;border-top:1px solid var(--line);padding-top:16px">
+ <h3 style="font-family:Newsreader,serif;font-size:22px;margin:0 0 8px">Reports & notifications</h3>
+ <p class="x-note">Email requires the upgraded Apps Script for legacy ledgers. Scheduled remote push requires a push server. Test notification checks this device only.</p>
+ <label class="x-label"><input type="checkbox" id="x-mail-enabled"> Monthly email report enabled</label>
+ <div class="x-btns"><button type="button" id="x-email-test">Send test email now</button><button type="button" id="x-email-check">Check email setup</button></div>
+ <p id="x-email-result" class="x-note" role="status"></p>
+ <label class="x-label"><input type="checkbox" id="x-push-enabled"> Monthly push notification enabled</label>
+ <label class="x-label" for="x-push-hour">Preferred notification hour (local)</label>
+ <select class="x-input" id="x-push-hour"><option value="8">08:00</option><option value="9">09:00</option><option value="10">10:00</option><option value="12">12:00</option><option value="18">18:00</option></select>
+ <div class="x-btns"><button type="button" id="x-push-test">Test notification on this device</button></div>
+ <p id="x-push-result" class="x-note" role="status"></p>
+ </div>`);
+function deliveryPrefs(){try{return JSON.parse(localStorage.getItem('lg-delivery-v1')||'{}');}catch{return {};}}
+function saveDelivery(p){const n={...deliveryPrefs(),...p};localStorage.setItem('lg-delivery-v1',JSON.stringify(n));if(window.lgCfgChanged)window.lgCfgChanged();}
+function drawDelivery(){const p=deliveryPrefs();$('x-mail-enabled').checked=!!p.email;$('x-push-enabled').checked=!!p.push;$('x-push-hour').value=String(p.hour||9);}
+['x-mail-enabled','x-push-enabled','x-push-hour'].forEach(id=>$(id).addEventListener('change',()=>{saveDelivery({email:$('x-mail-enabled').checked,push:$('x-push-enabled').checked,hour:+$('x-push-hour').value});toast('Preferences saved on this device. Remote delivery requires server configuration.',false);}));
+$('x-email-check').onclick=()=>{$('x-email-result').textContent=cfg()?.mode==='google'?'Google account connected. A dedicated email delivery backend is not yet configured.':cfg()?'Legacy ledger connected. Upgrade its Apps Script to enable real email sending.':'Sign in to your ledger before sending email.';};
+$('x-email-test').onclick=async()=>{
+ const el=$('x-email-result');const recipients=(CFG.emails||[]);if(!recipients.length){el.textContent='Add a recipient email above, then try again.';return;}
+ if(!cfg()){el.textContent='Sign in before sending a test email.';return;}
+ if(cfg().mode==='google'){el.textContent='Not sent: Google Sheets alone cannot send email. Configure a secure email backend first.';return;}
+ el.textContent='Requesting real email delivery…';try{const r=await api('POST',{action:'testEmail',emails:recipients});el.textContent=r.emailSent?'Email send accepted by Apps Script. Check your inbox and spam folder.':'Not sent: '+(r.emailError||'The deployed Apps Script does not support test emails. Deploy the included Code.gs.');}catch(e){el.textContent='Not sent: '+errText(e);}
+};
+$('x-push-test').onclick=async()=>{
+ const el=$('x-push-result');if(!('Notification' in window)||!('serviceWorker' in navigator)){el.textContent='Notifications are not supported in this browser.';return;}
+ if(/iPhone|iPad|iPod/.test(navigator.userAgent)&&!window.navigator.standalone){el.textContent='On iPhone, first add this site to your Home Screen and open it from there.';return;}
+ try{const permission=await Notification.requestPermission();if(permission!=='granted'){el.textContent='Notification permission was not granted.';return;}
+ const reg=await navigator.serviceWorker.ready;await reg.showNotification('Savings Ledger · Test notification',{body:'Your monthly report notification preview. This is a device test, not a scheduled push.',icon:'icon-192.png',tag:'savings-ledger-test',data:{url:location.origin+location.pathname+'#report='+new Date().toISOString().slice(0,7)}});
+ el.textContent='Local notification displayed. Scheduled push is not active until a server is configured.';
+ }catch(e){el.textContent='Notification test failed: '+e.message;}
+};drawDelivery();
 $('x-title-in').onchange=e=>{saveCfg({title:e.target.value.trim()});cfgChanged();};
 $('x-goal-in').onchange=e=>{saveCfg({goal:num(e.target.value)});cfgChanged();toast('Target saved',false);};
 $('x-start-in').onchange=e=>{const v=e.target.value.trim();saveCfg({startSaving:v===''?null:num(v)});cfgChanged();toast('Saved',false);};
@@ -1674,12 +1707,53 @@ function reportData(k){
     {l:`Saved in ${R.y} so far`,v:money0(Y0.saved),s:hasYL?`${pS(ytdYoy)} vs the same months of ${R.y-1}`:`no ${R.y-1} to compare with`,tone:tone(ytdYoy)},
     {l:'Against the phased goal',v:gr==null?'n/a':pS(gr),s:path?`${signed0(gap)} vs the path · target ${money0(path.goal)}`:'no target set for this year',tone:tone(gr)},
     {l:'Net worth',v:money0(net),s:`cash ${money0(cash)}${grams>0?` · gold ${money0(goldW)}`:''}${loan>0.5?` · loans −${money0(loan)}`:''}`,tone:''}]});
+  /* Report v3: reconciliation, contributor detail, gold market versus invested cost. */
+  const gmAll=goldMonthly(rows),gmCur=gmAll.find(x=>x.k===k),gmPrev=gmAll.find(x=>x.k===pk);
+  const priorGoldValue=gmPrev&&gmPrev.value!=null?gmPrev.value:0;
+  const currentGoldValue=gmCur&&gmCur.value!=null?gmCur.value:goldW;
+  const goldPriceEffect=gmCur&&Number.isFinite(gmCur.priceEffect)?gmCur.priceEffect:null;
+  const goldBought=C0.gold;
+  const contributorSum=C0.p.reduce((a,b)=>a+b,0);
+  const nonContributor=C0.saved-contributorSum;
+  const netChange=hasPrev?net-(function(){let pc=0,pl=0,pg=0;rows.forEach(d=>{if(d.sortTs>=Rp.b)return;if(isLoanRow(d))pl-=d.usd||0;else{pc+=d.usd||0;pg+=(d.gold||0)*(d.goldPrice||0);}});return pc+(gmPrev&&gmPrev.value!=null?gmPrev.value:pg)-pl;})():null;
+  const bridgeResidual=netChange==null||goldPriceEffect==null?null:netChange-C0.saved-goldPriceEffect;
+  const signedMoney=n=>n==null?'—':signed0(n);
+  const contributorRows=PP.map((name,i)=>[name,money0(C0.p[i]),money0(Y0.p[i]),contributorSum>0?pS(C0.p[i]/contributorSum):'—']);
+  if(Math.abs(nonContributor)>.005)contributorRows.push(['Loans / adjustments / unattributed',signedMoney(nonContributor),signedMoney(Y0.saved-Y0.p.reduce((a,b)=>a+b,0)),'—']);
+  contributorRows.push(['Total saved',money0(C0.saved),money0(Y0.saved),'100% of monthly total']);
+  D.sections.push({type:'table',title:'Contribution breakdown · month and year to date',cols:[['Contributor',0],['Month',1],['YTD',1],['Share of deposits',1]],rows:contributorRows,boldLast:true,
+    note:'Individual contributions reflect named deposits. The reconciliation row explains any difference between deposits and total savings (including loan entries or adjustments).'});
+  if(hasPrev){
+    D.sections.push({type:'table',title:'Why net worth changed · monthly bridge',cols:[['Driver',0],['Amount',1]],rows:[
+      ['Opening net worth',money0(net-netChange)],['Net savings recorded',signedMoney(C0.saved)],
+      ['Gold market price effect',goldPriceEffect==null?'Not available':signedMoney(goldPriceEffect)],
+      ['Other changes / reconciliation',bridgeResidual==null?'Not available':signedMoney(bridgeResidual)],
+      ['Closing net worth',money0(net)]],boldLast:true,
+      note:goldPriceEffect==null?'Gold price impact cannot be isolated without a comparable price for both months.':'The reconciliation line is shown explicitly instead of attributing unexplained changes to contributions. Gold purchases are not counted as market gains.'});
+  }
+  if(gmAll.length){
+    const hist=gmAll.filter(x=>x.k<=k).slice(-18),cGold='#B68B3E',cCost='#346F9E',cMarket='#267C6A';
+    D.sections.push({type:'chart',title:'Gold price history · USD per 24k gram (recorded / estimated)',cfg:{type:'line',data:{labels:hist.map(x=>lbl(x.k)),datasets:[{label:'Market price / g (24k)',data:hist.map(x=>x.px),borderColor:cGold,backgroundColor:'rgba(182,139,62,.10)',tension:.25,pointRadius:2,spanGaps:false}]},options:opt()}});
+    D.sections.push({type:'chart',title:'Your gold · cumulative cost vs market value',cfg:{type:'line',data:{labels:hist.map(x=>lbl(x.k)),datasets:[
+      {label:'Cumulative amount invested',data:hist.map(x=>x.cost),borderColor:cCost,tension:.2,pointRadius:2},
+      {label:'Market value of holdings',data:hist.map(x=>x.value),borderColor:cMarket,tension:.2,pointRadius:2,spanGaps:false}]},options:opt()}});
+    D.sections.push({type:'table',title:'Gold investment · monthly and cumulative',cols:[['Metric',0],['This month',1],['Total to date',1]],rows:[
+      ['Gold bought · paid',money0(goldBought),money0(goldCost)],
+      ['Gold bought · grams',`${rows.filter(x=>x.yyyyMM===k&&!isLoanRow(x)).reduce((a,x)=>a+(x.gold||0),0).toFixed(2)} g`,`${grams.toFixed(2)} g`],
+      ['Gold market value',signedMoney(currentGoldValue-priorGoldValue),money0(goldW)],
+      ['Gold price-only effect',goldPriceEffect==null?'—':signedMoney(goldPriceEffect),'—'],
+      ['Unrealized gain / loss', '—',signedMoney(goldW-goldCost)]],
+      note:'The market-value change includes both purchases and price movement. The price-only effect excludes newly purchased gold. Historical prices may be estimated or manually entered.'});
+    const buys=rows.filter(d=>d.sortTs<R.b&&!isLoanRow(d)&&(d.gold||0)>0).sort((a,b)=>b.sortTs-a.sortTs);
+    if(buys.length)D.sections.push({type:'table',title:'Gold purchase ledger · recorded lots',cols:[['Date',0],['Contributor',0],['Gold',1],['Paid',1]],rows:buys.map(d=>[(d.date||'').split(' ')[0],cap(ownerKey(d.name))||'—',`${Number(d.gold||0).toFixed(2)} g`,money0((d.gold||0)*(d.goldPrice||0))]),note:'Purchase prices reflect amounts recorded in the ledger. For detailed purity and individual lot valuation, use Gold over time on the dashboard.'});
+  }
   /* what stands out */
   const ins=[];
   const prev6=[];for(let i=1;i<=6;i++){const kk=addMonths(k,-i);if(t.comp[kk])prev6.push(t.comp[kk].delta*(isFM(kk)?JF:1));}
   if(prev6.length>=2){const a=prev6.reduce((s,x)=>s+x,0)/prev6.length;if(a>0)ins.push(`You saved ${money0(C0.saved)} in ${label}, ${pS(C0.saved/a-1)} against your ${prev6.length}-month average of ${money0(a)}.`);}
   const tp=PP.map((p,i)=>[p,C0.p[i]]).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]),tps=tp.reduce((s,x)=>s+x[1],0);
   if(tp.length>1)ins.push(tp.map(([p,x])=>`${p} put in ${money0(x)} (${Math.round(x/tps*100)}%)`).join(', ')+'.');
+  if(Math.abs(nonContributor)>0.5)ins.push(`Named contributions total ${money0(contributorSum)} but net savings are ${money0(C0.saved)}. Difference: ${signedMoney(nonContributor)} from loan entries, withdrawals or other adjustments. Review the contribution breakdown.`);
   else if(tp.length===1)ins.push(`${tp[0][0]} put in all ${money0(tp[0][1])} of the month's deposits.`);
   if(hasYL&&ytdYoy!=null)ins.push(`Year to date you saved ${money0(Y0.saved)}, ${pS(ytdYoy)} against ${money0(YL.saved)} by ${MON[R.m-1]} ${R.y-1}.`);
   if(path&&gap!=null){
@@ -1739,7 +1813,7 @@ function reportData(k){
 }
 
 /* ----- on screen ----- */
-document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-pdf">Save 1-page PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
+document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-pdf">Export PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
 const st5=document.createElement('style');
 st5.textContent=`#rp{position:fixed;inset:0;z-index:600;background:var(--bg);overflow-y:auto;-webkit-overflow-scrolling:touch}
 .rp-bar{position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:var(--card);border-bottom:1px solid var(--line)}
@@ -1804,7 +1878,7 @@ function renderRepCard(){
   const isNew=seen<lc&&lc<nowKey();
   el.hidden=false;el.classList.toggle('new',isNew);
   $('x-rep-t').textContent=isNew?`Your ${fk(lc)} report is ready`:`Monthly report, ${fk(lc)}`;
-  $('x-rep-s').textContent='Scorecard, targets, gold and every entry. Save it as a PDF.';
+  $('x-rep-s').textContent='Contributors, wealth bridge, gold market charts and all entries. Export to PDF.';
 }
 
 /* ----- PDF: written directly, no outside library ----- */
@@ -1959,12 +2033,12 @@ function buildOnePagePdf(D){
   return P.bytes();
 }
 window.lgBuildDetailedPdf=k=>buildPdf(reportData(k));
-window.lgBuildPdf=k=>buildOnePagePdf(reportData(k));
+window.lgBuildPdf=k=>buildPdf(reportData(k));
 
 $('rp-pdf').onclick=async()=>{
   const b=$('rp-pdf'),old=b.textContent;b.textContent='Making…';b.disabled=true;
   try{
-    const bytes=buildOnePagePdf(reportData(RP.k)),name=`Savings report ${RP.k}.pdf`,blob=new Blob([bytes],{type:'application/pdf'});
+    const bytes=buildPdf(reportData(RP.k)),name=`Savings report ${RP.k}.pdf`,blob=new Blob([bytes],{type:'application/pdf'});
     let done=false;
     try{const file=new File([blob],name,{type:'application/pdf'});
       if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:name});done=true;}

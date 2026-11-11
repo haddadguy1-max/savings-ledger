@@ -56,9 +56,22 @@ function upsert_(rows){
   if (adds.length) s.getRange(s.getLastRow() + 1, 1, adds.length, 11).setValues(adds);
 }
 
+function settingsTab_(){const ss=SpreadsheetApp.getActive();let s=ss.getSheetByName('Settings');if(!s){s=ss.insertSheet('Settings');s.appendRow(['Key','Value JSON','Updated']);}return s;}
+function readSettings_(){const v=settingsTab_().getDataRange().getValues(),out={};for(let i=1;i<v.length;i++){if(v[i][0])out[String(v[i][0])]={v:String(v[i][1]||''),u:Number(v[i][2])||0};}return out;}
+function saveSettings_(changes){const s=settingsTab_(),v=s.getDataRange().getValues(),ix={};for(let i=1;i<v.length;i++)ix[String(v[i][0])]=i+1;Object.keys(changes||{}).forEach(k=>{const x=changes[k],at=ix[k];if(at&&(Number(v[at-1][2])||0)>=Number(x.u||0))return;const row=[k,String(x.v||''),Number(x.u)||Date.now()];if(at)s.getRange(at,1,1,3).setValues([row]);else{s.appendRow(row);ix[k]=s.getLastRow();}});}
+function recipients_(){const s=readSettings_().reportEmails;if(!s)return [];try{const a=JSON.parse(s.v);return Array.isArray(a)?a.filter(x=>/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x)).slice(0,6):[];}catch(e){return [];}}
+function sendReportEmail_(recipients,test){const emails=(recipients||recipients_()).filter(x=>/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x)).slice(0,6);if(!emails.length)return {emailSent:false,emailError:'No valid recipients configured'};
+ const tz=Session.getScriptTimeZone(),today=new Date(),month=new Date(today.getFullYear(),today.getMonth()-1,1),monthLabel=Utilities.formatDate(month,tz,'MMMM yyyy');
+ const title=(readSettings_().title||{}).v;let ledgerName='Savings Ledger';try{ledgerName=JSON.parse(title)||ledgerName;}catch(e){}
+ const link=ScriptApp.getService().getUrl();
+ const html='<div style="font-family:Arial,sans-serif;max-width:540px"><h2>'+ledgerName.replace(/[<>]/g,'')+'</h2><h3>'+monthLabel+' savings report</h3><p>Your monthly report is ready. Open Savings Ledger to see your financial bridge, contributors, goal progress and gold performance.</p><p><a href="https://haddadguy1-max.github.io/savings-ledger/#report='+Utilities.formatDate(month,tz,'yyyy-MM')+'">Open monthly report</a></p><p>This message does not include sensitive financial figures.</p></div>';
+ emails.forEach(to=>MailApp.sendEmail({to,subject:(test?'[TEST] ':'')+'Savings Ledger · '+monthLabel+' report',htmlBody:html,body:'Your Savings Ledger report is ready. Open your Savings Ledger app.'}));
+ return {emailSent:true,recipients:emails.length};}
+function installMonthlyEmailTrigger(){ScriptApp.getProjectTriggers().filter(t=>t.getHandlerFunction()==='monthlyEmailJob').forEach(t=>ScriptApp.deleteTrigger(t));ScriptApp.newTrigger('monthlyEmailJob').timeBased().onMonthDay(1).atHour(9).create();}
+function monthlyEmailJob(){const setting=readSettings_().delivery;let enabled=false;try{enabled=!!JSON.parse(setting.v).email;}catch(e){}if(enabled&&recipients_().length)sendReportEmail_(null,false);}
 function doGet(e){
   if (!e || !e.parameter || e.parameter.token !== TOKEN) return out_({ error:'unauthorized' });
-  return out_({ rows:read_() });
+  return out_({ rows:read_(),settings:readSettings_() });
 }
 
 function doPost(e){
@@ -67,7 +80,7 @@ function doPost(e){
   if (body.token !== TOKEN) return out_({ error:'unauthorized' });
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
-  try { upsert_(body.rows || []); return out_({ ok:true }); }
+  try { if(body.action==='testEmail')return out_(sendReportEmail_(body.emails||[],true)); upsert_(body.rows || []);saveSettings_(body.settings||{});return out_({ ok:true }); }
   finally { lock.releaseLock(); }
 }
 

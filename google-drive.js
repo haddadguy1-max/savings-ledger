@@ -5,7 +5,7 @@ window.LGGoogle = (() => {
   const APP_MARKER = 'savings-ledger-google-v1';
   let token = '', expiry = 0, spreadsheetId = '', account = '';
   let client;
-  const ready = () => !CLIENT_ID.startsWith('REPLACE_');
+  const ready = () => /^[0-9]+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com$/.test(CLIENT_ID);
   const active = () => Boolean(token && Date.now() < expiry && spreadsheetId);
   async function request(url, opts={}) {
     if (!token || Date.now() >= expiry) throw Error('Google session expired. Sign in again.');
@@ -16,7 +16,7 @@ window.LGGoogle = (() => {
   }
   const sheets = path => 'https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(spreadsheetId)+path;
   async function login() {
-    if (!ready()) throw Error('Configure your Google OAuth client ID in google-drive.js first.');
+    if (!ready()) throw Error('Google sign-up is not activated yet. The app owner must add a Google OAuth Client ID in google-drive.js (Google Cloud Console → Clients).');
     if (!window.google?.accounts?.oauth2) throw Error('Google sign-in library did not load. Check your internet connection.');
     if (!client) client = google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPES,callback:()=>{}});
     await new Promise((resolve,reject)=>{
@@ -42,7 +42,7 @@ window.LGGoogle = (() => {
   async function get() {
     const r=await request(sheets('/values:batchGet?ranges='+encodeURIComponent("'Raw data'!A2:K")+'&ranges='+encodeURIComponent("'Settings'!A2:C")));
     const rr=r.valueRanges?.[0]?.values||[],ss=r.valueRanges?.[1]?.values||[];
-    const rows=rr.filter(x=>x[0]).map(x=>({id:x[0],date:x[1]||'',type:x[2]||'',gold:+x[3]||0,eur:+x[4]||0,usd:+x[5]||0,name:x[6]||'',goldPrice:+x[8]||0,updated:+x[9]||1,deleted:x[10]==='true'}));
+    const rows=rr.filter(x=>x[0]).map(x=>({id:x[0],date:x[1]||'',type:x[2]||'',gold:+x[3]||0,eur:+x[4]||0,usd:+x[5]||0,name:x[6]||'',goldPrice:+x[8]||0,updated:+x[9]||1,deleted:String(x[10]).toLowerCase()==='true'}));
     const settings={};for(const x of ss){if(!x[0])continue;settings[x[0]]={v:x[1]||'',u:+x[2]||0};}
     return {rows,settings};
   }
