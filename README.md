@@ -37,3 +37,9 @@ This package retains the existing Savings Ledger dashboard, tabs, and legacy App
 7. Check offline/reconnect behavior and test iPhone PWA separately.
 
 Do not publish this to real users before completing these tests and an OAuth/security review.
+
+## November report enhancement
+- **Save 1-page PDF** now produces a compact A4 executive report with net worth, monthly and YTD contributions, a reconciled wealth bridge, an actual-vs-phased-plan line graph, gold cost/value/holdings and a short insight. The original detailed on-screen report and the detailed PDF generator are retained in code (`lgBuildDetailedPdf`).
+- The bridge reconciles opening and closing net worth; gold price effect is estimated from the change in market value less changes in gold cost. The residual is explicitly shown as **Other / reconciliation**, not silently classified as savings. Market prices may be estimated, and no historical snapshot has been implemented yet.
+- Email recipient wording now accurately states that an email service is required. **No working test-email, scheduled delivery, or push service is included in this build.** These require backend credentials, scheduling, opt-in permissions and end-to-end tests; do not promise them to users yet.
+- Google OAuth still requires a real client ID configured by the repository owner. No password registration service has been added. Legacy ledger/password login is retained.

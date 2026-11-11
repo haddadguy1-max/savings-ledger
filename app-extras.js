@@ -1582,7 +1582,7 @@ $('x-sync').insertAdjacentHTML('afterend',`<div class="section" id="x-settings">
  <p class="x-note">If your first month also holds savings you already had, type what you really saved that month. Year-over-year, averages and best-month figures then use it, so later years are compared fairly.</p>
  <label class="x-label" for="x-mail-in">Monthly report email (optional)</label>
  <input id="x-mail-in" class="x-input" type="text" inputmode="email" autocomplete="off" autocapitalize="off" placeholder="you@example.com, partner@example.com">
- <p class="x-note" id="x-mail-note">On the 1st of each month these addresses get “Your report is ready” with the month’s numbers and a link to the full report. Needs you to be signed in.</p>
+ <p class="x-note" id="x-mail-note">Save recipients here. Automatic delivery and test sending require an email service; entering an address alone does not send mail.</p>
 </div></div>`);
 const st4=document.createElement('style');
 st4.textContent=`.x-ppl{display:flex;flex-wrap:wrap;gap:8px}
@@ -1626,7 +1626,7 @@ $('x-mail-in').onchange=e=>{
   const list=e.target.value.split(/[,;\s]+/).map(x=>x.trim()).filter(Boolean),bad=list.filter(x=>!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x));
   if(bad.length){toast(`Check this address: ${bad[0]}`);return;}
   saveCfg({emails:list.slice(0,6)});cfgChanged();
-  toast(!list.length?'Monthly email turned off':(cfg()?(shared.ok===false?'Saved. Update the ledger script to start the emails.':'Saved. The first email arrives on the 1st.'):'Saved. Sign in to start the emails.'),false);
+  toast(!list.length?'Monthly email turned off':(cfg()?(shared.ok===false?'Saved. Update the ledger script to start the emails.':'Email saved. Automatic delivery requires a configured email service.'):'Saved. Sign in to start the emails.'),false);
 };
 $('x-title-in').onchange=e=>{saveCfg({title:e.target.value.trim()});cfgChanged();};
 $('x-goal-in').onchange=e=>{saveCfg({goal:num(e.target.value)});cfgChanged();toast('Target saved',false);};
@@ -1739,7 +1739,7 @@ function reportData(k){
 }
 
 /* ----- on screen ----- */
-document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-pdf">Save PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
+document.body.insertAdjacentHTML('beforeend',`<div id="rp" hidden><div class="rp-bar"><button type="button" id="rp-close" aria-label="Close">✕</button><select class="month-select" id="rp-sel" aria-label="Month"></select><button type="button" id="rp-pdf">Save 1-page PDF</button></div><div class="rp-body" id="rp-body"></div></div>`);
 const st5=document.createElement('style');
 st5.textContent=`#rp{position:fixed;inset:0;z-index:600;background:var(--bg);overflow-y:auto;-webkit-overflow-scrolling:touch}
 .rp-bar{position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:var(--card);border-bottom:1px solid var(--line)}
@@ -1912,11 +1912,59 @@ function buildPdf(D){
   need(34);P.wrap(D.foot,8,CW).forEach(ln=>{P.text(L,y+8,ln,{size:8,color:MUT});y+=10.5;});
   return P.bytes();
 }
-window.lgBuildPdf=k=>buildPdf(reportData(k));
+/* Compact A4 executive report; the existing detailed report remains available on screen. */
+function buildOnePagePdf(D){
+  const P=PdfDoc(),L=38,R=P.W-38,W=R-L,N='#162A3A',M='#687786',B='#E5EAF0',GREEN='#187A62',RED='#B6534E',GOLD='#B68B3E';
+  P.page();const row=allData,range=mRange(D.k),prev=mRange(addMonths(D.k,-1)),year=new Date(range.y,0,1).getTime();
+  const cur=bucket(row,range.a,range.b),ytd=bucket(row,year,range.b),previous=bucket(row,prev.a,prev.b);
+  const t=computeAnalytics(row),path=pathFor(range.y,t),actual=cumAt(t,D.k),target=path?path.at(D.k):null;
+  const value=(end)=>{let cash=0,cost=0,g=0,loans=0;row.forEach(d=>{if(!(d.sortTs<end))return;if(isLoanRow(d))loans-=d.usd||0;else{cash+=d.usd||0;cost+=(d.gold||0)*(d.goldPrice||0);g+=d.gold||0;}});let price=null;try{const gs=goldMonthly(row).filter(x=>x.k<=(end===range.b?D.k:addMonths(D.k,-1))&&x.px);if(gs.length)price=gs[gs.length-1].px;}catch(e){};const units=row.filter(d=>d.sortTs<end&&!isLoanRow(d)).reduce((a,d)=>a+(d.gold||0)*rowKarat(d)/24,0);return {cash,cost,grams:g,loans,gold:g>0?(price!=null?units*price:cost):0,price};};
+  const now=value(range.b),before=value(prev.b),nw=now.cash+now.gold-now.loans,pw=before.cash+before.gold-before.loans,change=nw-pw;
+  const goldFlow=now.gold-before.gold,acquired=now.cost-before.cost;
+  // New gold purchases transfer value from cash to gold, not new net worth.
+  const market=goldFlow-acquired,contribution=cur.saved,other=change-contribution-market;
+  const fmt=n=>money0(n),sign=n=>(n>=0?'+':'−')+fmt(Math.abs(n)),pct=n=>n==null?'—':pS(n);
+  const txt=(x,y,v,size=10,color=N,bold=false,align='left')=>P.text(x,y,v,{size,color,bold,align});
+  const line=(y)=>P.line(L,y,R,y,B,.8);
+  const title=(y,v)=>txt(L,y,v.toUpperCase(),9,M,true);
+  txt(L,43,'SAVINGS LEDGER  /  MONTHLY WEALTH REVIEW',9,M,true);
+  txt(L,77,D.label,27,N,true);txt(R,75,D.partial?'MONTH TO DATE':'MONTH CLOSED',8,M,true,'right');
+  line(91);
+  const cards=[['NET WORTH',fmt(nw),sign(change)+' vs prior month'],['MONTHLY SAVED',fmt(cur.saved),'YTD '+fmt(ytd.saved)],['VS PHASED PLAN',target==null?'Not set':sign(actual-target),target==null?'Set target in Data':(actual>=target?'Ahead of plan':'Behind plan')]];
+  cards.forEach((c,i)=>{const x=L+i*(W/3+1),w=W/3-8;P.rect(x,105,w,78,'#F3F6F8');txt(x+10,123,c[0],8,M,true);txt(x+10,148,c[1],17,i===2&&target!=null?(actual>=target?GREEN:RED):N,true);txt(x+10,169,c[2],8,M);});
+  title(212,'Monthly wealth bridge');txt(R,212,'Change in net worth '+sign(change),9,N,true,'right');
+  const bridge=[['Opening wealth',pw],['Net contributions',contribution],['Gold market effect',market],['Other / reconciliation',other],['Closing wealth',nw]];
+  bridge.forEach(([label,n],i)=>{const yy=235+i*27;txt(L+5,yy,label,10,i===0||i===4?N:M,i===0||i===4);txt(R-5,yy,i===0||i===4?fmt(n):sign(n),10,i===2?(n>=0?GREEN:RED):N,true,'right');if(i!==4)P.line(L,yy+9,R,yy+9,B,.45);});
+  title(391,'Savings trajectory · actual vs plan');
+  const months=[];for(let i=1;i<=range.m;i++){const k=range.y+'-'+String(i).padStart(2,'0');if(k>=firstMonth())months.push(k);}
+  const data=months.map(k=>({k,a:cumAt(t,k),p:path?path.at(k):null}));
+  const vals=data.flatMap(d=>[d.a,d.p]).filter(Number.isFinite),min=Math.min(...vals,0),max=Math.max(...vals,1),span=max-min||1;
+  const X=L+16,Y=416,CW=W-32,CH=91;
+  for(let i=0;i<4;i++)P.line(X,Y+i*CH/3,X+CW,Y+i*CH/3,B,.5);
+  const plot=(key,color)=>{for(let i=1;i<data.length;i++){const a=data[i-1][key],b=data[i][key];if(a==null||b==null)continue;const x1=X+(i-1)*CW/Math.max(1,data.length-1),x2=X+i*CW/Math.max(1,data.length-1);P.line(x1,Y+CH-(a-min)/span*CH,x2,Y+CH-(b-min)/span*CH,color,2);}};
+  plot('a','#306B9B');if(path)plot('p',GOLD);
+  txt(X,Y+CH+14,months.length?lbl(months[0]):'',8,M);txt(X+CW,Y+CH+14,months.length?lbl(months[months.length-1]):'',8,M,false,'right');
+  txt(L,542,'— Actual',9,'#306B9B',true);if(path)txt(L+88,542,'— Phased goal',9,GOLD,true);
+  line(553);title(575,'Gold · position and performance');
+  const gmetrics=[['HOLDINGS',now.grams.toFixed(2)+' g'],['INVESTED COST',fmt(now.cost)],['MARKET VALUE',fmt(now.gold)],['UNREALIZED P/L',sign(now.gold-now.cost)]];
+  gmetrics.forEach((m,i)=>{const x=L+(i%2)*W/2,yy=599+Math.floor(i/2)*38;txt(x,yy,m[0],8,M,true);txt(x,yy+18,m[1],13,N,true);});
+  txt(L,680,'Gold price impact this month: '+sign(market)+'  |  Gold acquired: '+Math.max(0,now.grams-before.grams).toFixed(2)+' g',9,market<0?RED:GREEN);
+  line(699);title(722,'Performance at a glance');
+  txt(L,743,'',9);txt(L,743,'NET CONTRIBUTIONS',8,M,true);txt(L+218,743,'MONTH',8,M,true);txt(R,743,'YTD',8,M,true,'right');
+  txt(L,762,'Savings added',10,N);txt(L+218,762,fmt(cur.saved),10,N,true);txt(R,762,fmt(ytd.saved),10,N,true,'right');
+  const remaining=Math.max(0,12-range.m),need=path&&remaining?(path.goal-actual)/remaining:null;
+  const insight=target==null?'Set a savings goal in Data to unlock plan tracking.':(actual>=target?'Savings are ahead of the phased plan.':'Savings are below the phased plan.')+(need!=null?' Remaining monthly pace: '+fmt(Math.max(0,need))+'.':'');
+  txt(L,790,insight,8,M);txt(L,813,'Market gold values are estimates; internal asset transfers are not new savings.',7,M);
+  txt(R,813,'Generated '+new Date().toISOString().slice(0,10),7,M,false,'right');
+  return P.bytes();
+}
+window.lgBuildDetailedPdf=k=>buildPdf(reportData(k));
+window.lgBuildPdf=k=>buildOnePagePdf(reportData(k));
+
 $('rp-pdf').onclick=async()=>{
   const b=$('rp-pdf'),old=b.textContent;b.textContent='Making…';b.disabled=true;
   try{
-    const bytes=buildPdf(reportData(RP.k)),name=`Savings report ${RP.k}.pdf`,blob=new Blob([bytes],{type:'application/pdf'});
+    const bytes=buildOnePagePdf(reportData(RP.k)),name=`Savings report ${RP.k}.pdf`,blob=new Blob([bytes],{type:'application/pdf'});
     let done=false;
     try{const file=new File([blob],name,{type:'application/pdf'});
       if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:name});done=true;}
